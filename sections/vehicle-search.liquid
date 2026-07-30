@@ -135,9 +135,40 @@
     var statusEl = root.querySelector('[data-role="status"]');
     var resultEl = root.querySelector('[data-role="result"]');
 
-    // slug -> Model>Body>Year tree, so re-picking a Make costs nothing.
+    // slug -> { name, models: { model: [bodies] } }, from the index. Covers the
+    // Model and Body selects with no network request.
+    var skeleton = {};
+
+    // slug -> full Model>Body>Year tree. Needed only for years and leaf data.
     var cache = {};
-    var tree = null;
+    // slug -> in-flight request, so a background prefetch and a later click on
+    // the same Make share one request instead of racing.
+    var pending = {};
+
+    /**
+     * Fetches a Make's full tree, or returns the cached/in-flight one.
+     *
+     * Called speculatively the moment a Make is selected. By the time the user
+     * has picked a Model and a Body — two interactions later — this has almost
+     * always landed, so the Year select fills instantly.
+     */
+    function loadTree(slug) {
+      if (cache[slug]) return Promise.resolve(cache[slug]);
+      if (pending[slug]) return pending[slug];
+
+      pending[slug] = getJson(ENDPOINT + '?make=' + encodeURIComponent(slug))
+        .then(function (data) {
+          cache[slug] = data;
+          delete pending[slug];
+          return data;
+        })
+        .catch(function (error) {
+          delete pending[slug];
+          throw error;
+        });
+
+      return pending[slug];
+    }
 
     function status(message, tone) {
       statusEl.textContent = message || '';
@@ -222,6 +253,10 @@
             reset(makeEl, 'No data');
             return;
           }
+          makes.forEach(function (make) {
+            skeleton[make.slug] = make;
+          });
+
           fill(
             makeEl,
             makes.map(function (make) {
@@ -244,56 +279,45 @@
 
     makeEl.addEventListener('change', function () {
       var slug = makeEl.value;
-      reset(modelEl, 'Loading…');
       reset(bodyEl, 'Select a model first');
       reset(yearEl, 'Select a body first');
       hideResult();
-      tree = null;
 
-      if (!slug) {
+      if (!slug || !skeleton[slug]) {
         reset(modelEl, 'Select a make first');
         return;
       }
 
-      if (cache[slug]) {
-        tree = cache[slug];
-        populateModels();
-        return;
-      }
-
-      status('Loading ' + makeEl.options[makeEl.selectedIndex].textContent + '…');
-      getJson(ENDPOINT + '?make=' + encodeURIComponent(slug))
-        .then(function (data) {
-          cache[slug] = data;
-          tree = data;
-          populateModels();
-          status('');
-        })
-        .catch(function (error) {
-          status(error.message, 'error');
-          reset(modelEl, 'Unavailable');
-        });
-    });
-
-    function populateModels() {
+      // Instant — model names came down with the index.
       fill(
         modelEl,
-        Object.keys(tree).map(function (model) {
+        Object.keys(skeleton[slug].models).map(function (model) {
           return { value: model, label: model };
         }),
         'Select model'
       );
-    }
+
+      // Warm the full tree now, while the user is reading the Model list.
+      status('');
+      loadTree(slug).catch(function () {
+        /* Surfaced on Body change, where it actually blocks the user. */
+      });
+    });
 
     modelEl.addEventListener('change', function () {
-      reset(bodyEl, 'Select a model first');
       reset(yearEl, 'Select a body first');
       hideResult();
-      if (!modelEl.value || !tree) return;
 
+      var slug = makeEl.value;
+      if (!modelEl.value || !skeleton[slug]) {
+        reset(bodyEl, 'Select a model first');
+        return;
+      }
+
+      // Instant — body names also came down with the index.
       fill(
         bodyEl,
-        Object.keys(tree[modelEl.value]).map(function (body) {
+        (skeleton[slug].models[modelEl.value] || []).map(function (body) {
           return { value: body, label: body };
         }),
         'Select body'
@@ -301,30 +325,59 @@
     });
 
     bodyEl.addEventListener('change', function () {
-      reset(yearEl, 'Select a body first');
       hideResult();
-      if (!bodyEl.value || !tree) return;
 
-      // Year values are not necessarily plain numbers — real data uses ranges
-      // like "2020-current" or "2015-2019". Sort on the first 4-digit year found
-      // so ranges order sensibly, then fall back to a string compare so that,
-      // for a shared start year, "2020-current" outranks "2020-2023".
-      var years = Object.keys(tree[modelEl.value][bodyEl.value]).sort(function (a, b) {
-        var diff = leadingYear(b) - leadingYear(a);
-        return diff !== 0 ? diff : String(b).localeCompare(String(a));
-      });
+      var slug = makeEl.value;
+      var model = modelEl.value;
+      var body = bodyEl.value;
 
-      fill(
-        yearEl,
-        years.map(function (year) {
-          return { value: year, label: year };
-        }),
-        'Select year'
-      );
+      if (!body) {
+        reset(yearEl, 'Select a body first');
+        return;
+      }
+
+      // First point that needs year data. Usually already cached by the prefetch.
+      reset(yearEl, cache[slug] ? 'Select year' : 'Loading…');
+
+      loadTree(slug)
+        .then(function (tree) {
+          // The user may have changed an earlier select while this was in flight.
+          if (makeEl.value !== slug || modelEl.value !== model || bodyEl.value !== body) return;
+
+          var branch = tree[model] && tree[model][body];
+          if (!branch) {
+            reset(yearEl, 'No years found');
+            return;
+          }
+
+          // Year values are not necessarily plain numbers — real data uses ranges
+          // like "2020-current" or "2015-2019". Sort on the first 4-digit year
+          // found so ranges order sensibly, then fall back to a string compare so
+          // that, for a shared start year, "2020-current" outranks "2020-2023".
+          var years = Object.keys(branch).sort(function (a, b) {
+            var diff = leadingYear(b) - leadingYear(a);
+            return diff !== 0 ? diff : String(b).localeCompare(String(a));
+          });
+
+          fill(
+            yearEl,
+            years.map(function (year) {
+              return { value: year, label: year };
+            }),
+            'Select year'
+          );
+        })
+        .catch(function (error) {
+          if (makeEl.value !== slug || bodyEl.value !== body) return;
+          status(error.message, 'error');
+          reset(yearEl, 'Unavailable');
+        });
     });
 
     yearEl.addEventListener('change', function () {
       hideResult();
+
+      var tree = cache[makeEl.value];
       if (!yearEl.value || !tree) return;
 
       var vehicle = tree[modelEl.value][bodyEl.value][yearEl.value];
