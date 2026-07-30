@@ -1,0 +1,389 @@
+{%- comment -%}
+  Vehicle search — four cascading selects (Make > Model > Body > Year).
+
+  Reads data from the app proxy exposed by the "Vehicles data transformer" app:
+
+    /apps/vehicle-search/vehicles.json              -> Make list (~1 KB)
+    /apps/vehicle-search/vehicles.json?make=toyota  -> that Make's tree (~21 KB)
+
+  The data is NOT in the theme's assets/ folder. Shopify gates theme file writes
+  behind a write_themes exemption, so the app serves the JSON from the shop's own
+  domain instead. Same-origin, so no CORS.
+
+  Copy this file to your theme's sections/ directory, then add "Vehicle search"
+  to any template from the theme editor.
+{%- endcomment -%}
+
+<div
+  class="vehicle-search"
+  id="vehicle-search-{{ section.id }}"
+  data-endpoint="{{ section.settings.endpoint }}"
+>
+  {%- if section.settings.heading != blank -%}
+    <h2 class="vehicle-search__heading">{{ section.settings.heading }}</h2>
+  {%- endif -%}
+
+  <div class="vehicle-search__status" data-role="status" role="status" aria-live="polite"></div>
+
+  <div class="vehicle-search__grid">
+    <div class="vehicle-search__field">
+      <label for="vs-make-{{ section.id }}">Make</label>
+      <select id="vs-make-{{ section.id }}" data-role="make" disabled>
+        <option value="">Loading…</option>
+      </select>
+    </div>
+
+    <div class="vehicle-search__field">
+      <label for="vs-model-{{ section.id }}">Model</label>
+      <select id="vs-model-{{ section.id }}" data-role="model" disabled>
+        <option value="">Select a make first</option>
+      </select>
+    </div>
+
+    <div class="vehicle-search__field">
+      <label for="vs-body-{{ section.id }}">Body</label>
+      <select id="vs-body-{{ section.id }}" data-role="body" disabled>
+        <option value="">Select a model first</option>
+      </select>
+    </div>
+
+    <div class="vehicle-search__field">
+      <label for="vs-year-{{ section.id }}">Year</label>
+      <select id="vs-year-{{ section.id }}" data-role="year" disabled>
+        <option value="">Select a body first</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="vehicle-search__result" data-role="result" hidden></div>
+</div>
+
+{%- style -%}
+  #vehicle-search-{{ section.id }} {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: {{ section.settings.padding_block }}px 1.5rem;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__heading {
+    margin: 0 0 1rem;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1rem;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__field label {
+    display: block;
+    margin-bottom: 0.35rem;
+    font-size: 0.85rem;
+    font-weight: 600;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__field select {
+    width: 100%;
+    padding: 0.65rem 0.75rem;
+    border: 1px solid rgba(0, 0, 0, 0.25);
+    border-radius: 6px;
+    background: #fff;
+    font-size: 0.95rem;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__field select:disabled {
+    background: rgba(0, 0, 0, 0.04);
+    color: rgba(0, 0, 0, 0.45);
+    cursor: not-allowed;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__status {
+    min-height: 1.25rem;
+    margin-bottom: 0.5rem;
+    font-size: 0.85rem;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__status[data-tone="error"] {
+    color: #b3261e;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__result {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    border: 1px solid rgba(0, 0, 0, 0.12);
+    border-radius: 8px;
+    display: flex;
+    gap: 1rem;
+    align-items: center;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__result img {
+    width: 120px;
+    height: auto;
+    border-radius: 6px;
+    flex: 0 0 auto;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__result dl {
+    margin: 0.5rem 0 0;
+    font-size: 0.85rem;
+    color: rgba(0, 0, 0, 0.65);
+  }
+{%- endstyle -%}
+
+<script>
+  (function () {
+    var root = document.getElementById('vehicle-search-{{ section.id }}');
+    if (!root) return;
+
+    var ENDPOINT = root.dataset.endpoint || '/apps/vehicle-search/vehicles.json';
+
+    var makeEl = root.querySelector('[data-role="make"]');
+    var modelEl = root.querySelector('[data-role="model"]');
+    var bodyEl = root.querySelector('[data-role="body"]');
+    var yearEl = root.querySelector('[data-role="year"]');
+    var statusEl = root.querySelector('[data-role="status"]');
+    var resultEl = root.querySelector('[data-role="result"]');
+
+    // slug -> Model>Body>Year tree, so re-picking a Make costs nothing.
+    var cache = {};
+    var tree = null;
+
+    function status(message, tone) {
+      statusEl.textContent = message || '';
+      if (tone) statusEl.setAttribute('data-tone', tone);
+      else statusEl.removeAttribute('data-tone');
+    }
+
+    function fill(select, options, placeholder) {
+      select.innerHTML = '';
+      var first = document.createElement('option');
+      first.value = '';
+      first.textContent = placeholder;
+      select.appendChild(first);
+
+      options.forEach(function (option) {
+        var el = document.createElement('option');
+        el.value = option.value;
+        el.textContent = option.label;
+        select.appendChild(el);
+      });
+
+      select.disabled = options.length === 0;
+    }
+
+    function reset(select, placeholder) {
+      select.innerHTML = '<option value="">' + placeholder + '</option>';
+      select.disabled = true;
+    }
+
+    function hideResult() {
+      resultEl.hidden = true;
+      resultEl.innerHTML = '';
+    }
+
+    /**
+     * The storefront password page answers with HTML, not JSON. Detect that
+     * explicitly — otherwise JSON.parse fails with a confusing syntax error.
+     */
+    function getJson(url) {
+      return fetch(url, { headers: { Accept: 'application/json' } }).then(function (response) {
+        var type = response.headers.get('content-type') || '';
+        if (type.indexOf('application/json') === -1) {
+          throw new Error(
+            'Expected JSON but got "' + (type || 'unknown') + '". ' +
+              'If this store is password protected, the request was redirected to the password page.'
+          );
+        }
+        return response.json().then(function (body) {
+          if (!response.ok) {
+            throw new Error(body && body.message ? body.message : 'Request failed (' + response.status + ')');
+          }
+          return body;
+        });
+      });
+    }
+
+    function loadMakes() {
+      status('Loading vehicles…');
+      getJson(ENDPOINT)
+        .then(function (index) {
+          var makes = (index && index.makes) || [];
+          if (!makes.length) {
+            status('No vehicle data has been published yet.', 'error');
+            reset(makeEl, 'No data');
+            return;
+          }
+          fill(
+            makeEl,
+            makes.map(function (make) {
+              // value is the slug — that is what ?make= expects.
+              return { value: make.slug, label: make.name };
+            }),
+            'Select make'
+          );
+          status(
+            index.vehicleCount
+              ? index.vehicleCount.toLocaleString() + ' vehicles across ' + makes.length + ' makes'
+              : ''
+          );
+        })
+        .catch(function (error) {
+          status(error.message, 'error');
+          reset(makeEl, 'Unavailable');
+        });
+    }
+
+    makeEl.addEventListener('change', function () {
+      var slug = makeEl.value;
+      reset(modelEl, 'Loading…');
+      reset(bodyEl, 'Select a model first');
+      reset(yearEl, 'Select a body first');
+      hideResult();
+      tree = null;
+
+      if (!slug) {
+        reset(modelEl, 'Select a make first');
+        return;
+      }
+
+      if (cache[slug]) {
+        tree = cache[slug];
+        populateModels();
+        return;
+      }
+
+      status('Loading ' + makeEl.options[makeEl.selectedIndex].textContent + '…');
+      getJson(ENDPOINT + '?make=' + encodeURIComponent(slug))
+        .then(function (data) {
+          cache[slug] = data;
+          tree = data;
+          populateModels();
+          status('');
+        })
+        .catch(function (error) {
+          status(error.message, 'error');
+          reset(modelEl, 'Unavailable');
+        });
+    });
+
+    function populateModels() {
+      fill(
+        modelEl,
+        Object.keys(tree).map(function (model) {
+          return { value: model, label: model };
+        }),
+        'Select model'
+      );
+    }
+
+    modelEl.addEventListener('change', function () {
+      reset(bodyEl, 'Select a model first');
+      reset(yearEl, 'Select a body first');
+      hideResult();
+      if (!modelEl.value || !tree) return;
+
+      fill(
+        bodyEl,
+        Object.keys(tree[modelEl.value]).map(function (body) {
+          return { value: body, label: body };
+        }),
+        'Select body'
+      );
+    });
+
+    bodyEl.addEventListener('change', function () {
+      reset(yearEl, 'Select a body first');
+      hideResult();
+      if (!bodyEl.value || !tree) return;
+
+      // Year keys come back ascending because JavaScript orders integer-like
+      // object keys numerically. Reverse for newest-first.
+      var years = Object.keys(tree[modelEl.value][bodyEl.value]).sort(function (a, b) {
+        return Number(b) - Number(a);
+      });
+
+      fill(
+        yearEl,
+        years.map(function (year) {
+          return { value: year, label: year };
+        }),
+        'Select year'
+      );
+    });
+
+    yearEl.addEventListener('change', function () {
+      hideResult();
+      if (!yearEl.value || !tree) return;
+
+      var vehicle = tree[modelEl.value][bodyEl.value][yearEl.value];
+      if (!vehicle) return;
+
+      var parts = [];
+      parts.push('<div>');
+      parts.push('<strong>' + escapeHtml(vehicle.name) + '</strong>');
+      parts.push('<dl>');
+      parts.push('<div>Vehicle ID: ' + escapeHtml(vehicle.id) + '</div>');
+      if (vehicle.variant) {
+        parts.push('<div>Variant: ' + escapeHtml(vehicle.variant) + '</div>');
+      }
+      parts.push('</dl>');
+      parts.push('</div>');
+
+      var html = '';
+      if (vehicle.image) {
+        html += '<img src="' + escapeHtml(vehicle.image) + '" alt="' + escapeHtml(vehicle.name) + '" loading="lazy">';
+      }
+      html += parts.join('');
+
+      resultEl.innerHTML = html;
+      resultEl.hidden = false;
+
+      root.dispatchEvent(
+        new CustomEvent('vehicle-search:selected', {
+          bubbles: true,
+          detail: {
+            make: makeEl.options[makeEl.selectedIndex].textContent,
+            makeSlug: makeEl.value,
+            model: modelEl.value,
+            body: bodyEl.value,
+            year: yearEl.value,
+            vehicle: vehicle
+          }
+        })
+      );
+    });
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char];
+      });
+    }
+
+    loadMakes();
+  })();
+</script>
+
+{% schema %}
+{
+  "name": "Vehicle search",
+  "tag": "section",
+  "class": "vehicle-search-section",
+  "settings": [
+    {
+      "type": "text",
+      "id": "heading",
+      "label": "Heading",
+      "default": "Find parts for your vehicle"
+    },
+    {
+      "type": "text",
+      "id": "endpoint",
+      "label": "Data endpoint",
+      "default": "/apps/vehicle-search/vehicles.json",
+      "info": "App proxy path. Only change this if you changed the app_proxy subpath in shopify.app.toml."
+    },
+    {
+      "type": "range",
+      "id": "padding_block",
+      "label": "Vertical padding",
+      "min": 0,
+      "max": 100,
+      "step": 4,
+      "unit": "px",
+      "default": 40
+    }
+  ],
+  "presets": [{ "name": "Vehicle search" }]
+}
+{% endschema %}
