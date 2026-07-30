@@ -173,16 +173,34 @@
     }
 
     /**
-     * The storefront password page answers with HTML, not JSON. Detect that
-     * explicitly — otherwise JSON.parse fails with a confusing syntax error.
+     * Two things return HTML where we expect JSON, and they need different fixes:
+     *
+     *   - a 302 to /password, when the storefront is password protected
+     *   - the app's own 404 page, when [app_proxy].url in shopify.app.toml has a
+     *     wrong path (it must be exactly <app base URL>/proxy)
+     *
+     * Detect both before JSON.parse turns either into "Unexpected token '<'".
      */
     function getJson(url) {
       return fetch(url, { headers: { Accept: 'application/json' } }).then(function (response) {
         var type = response.headers.get('content-type') || '';
         if (type.indexOf('application/json') === -1) {
+          var hint;
+          if (response.redirected && response.url.indexOf('/password') !== -1) {
+            hint =
+              'The storefront is password protected, so the request was redirected to ' +
+              'the password page. Turn off Online Store > Preferences > Restrict access.';
+          } else if (response.status === 404) {
+            hint =
+              'The app proxy resolved to a route that does not exist. Check that ' +
+              '[app_proxy].url in shopify.app.toml is your app URL + "/proxy" with no ' +
+              'extra path segments, then run: shopify app deploy';
+          } else {
+            hint = 'Is the app running, and has a dataset been published?';
+          }
           throw new Error(
-            'Expected JSON but got "' + (type || 'unknown') + '". ' +
-              'If this store is password protected, the request was redirected to the password page.'
+            'Expected JSON from ' + url + ' but got "' + (type || 'unknown') +
+              '" (HTTP ' + response.status + '). ' + hint
           );
         }
         return response.json().then(function (body) {
@@ -287,10 +305,13 @@
       hideResult();
       if (!bodyEl.value || !tree) return;
 
-      // Year keys come back ascending because JavaScript orders integer-like
-      // object keys numerically. Reverse for newest-first.
+      // Year values are not necessarily plain numbers — real data uses ranges
+      // like "2020-current" or "2015-2019". Sort on the first 4-digit year found
+      // so ranges order sensibly, then fall back to a string compare so that,
+      // for a shared start year, "2020-current" outranks "2020-2023".
       var years = Object.keys(tree[modelEl.value][bodyEl.value]).sort(function (a, b) {
-        return Number(b) - Number(a);
+        var diff = leadingYear(b) - leadingYear(a);
+        return diff !== 0 ? diff : String(b).localeCompare(String(a));
       });
 
       fill(
@@ -343,6 +364,12 @@
         })
       );
     });
+
+    /** First 4-digit year in a value, or -1 if there isn't one. */
+    function leadingYear(value) {
+      var match = String(value).match(/\d{4}/);
+      return match ? Number(match[0]) : -1;
+    }
 
     function escapeHtml(value) {
       return String(value == null ? '' : value).replace(/[&<>"']/g, function (char) {
