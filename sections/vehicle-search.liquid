@@ -104,16 +104,6 @@
     padding: 1rem;
     border: 1px solid rgba(0, 0, 0, 0.12);
     border-radius: 8px;
-    /* A column: one block per matching vehicle, since a year range can cover
-       several overlapping series. */
-    display: flex;
-    flex-direction: column;
-    gap: 1rem;
-  }
-  #vehicle-search-{{ section.id }} .vehicle-search__result p {
-    margin: 0;
-    font-size: 0.9rem;
-    color: rgba(0, 0, 0, 0.65);
   }
   #vehicle-search-{{ section.id }} .vehicle-search__result dl {
     margin: 0.5rem 0 0;
@@ -142,6 +132,12 @@
 
     // slug -> full Model>Body>Year tree. Needed only for years and leaf data.
     var cache = {};
+
+    // One entry per Year option, in option order: { year: '1979-1988', vehicle: {…} }.
+    // A year range can hold several series, and each gets its own option, so the
+    // option value is an index into this array rather than the year string — no
+    // delimiter to escape, and no ambiguity when two options share a year.
+    var yearChoices = [];
     // slug -> in-flight request, so a background prefetch and a later click on
     // the same Make share one request instead of racing.
     var pending = {};
@@ -199,52 +195,95 @@
       select.disabled = true;
     }
 
+    /**
+     * Resets the Year select and drops the choice list with it. Kept together so a
+     * stale index can never resolve against a rebuilt list.
+     */
+    function resetYear(placeholder) {
+      yearChoices = [];
+      reset(yearEl, placeholder);
+    }
+
     function hideResult() {
       resultEl.hidden = true;
       resultEl.innerHTML = '';
     }
 
     /**
-     * Two things return HTML where we expect JSON, and they need different fixes:
+     * Three things arrive where we expect JSON, each needing a different fix:
      *
-     *   - a 302 to /password, when the storefront is password protected
-     *   - the app's own 404 page, when [app_proxy].url in shopify.app.toml has a
-     *     wrong path (it must be exactly <app base URL>/proxy)
+     *   - an EMPTY body with a 404. **`shopify theme dev` does not forward
+     *     app-proxy paths.** Its local server proxies ordinary storefront requests
+     *     to the shop but answers `/apps/*` itself with a zero-length 404, so the
+     *     request never reaches the app. Verified 2026-07-31: `/` returns the theme,
+     *     `/apps/vehicle-search/vehicles.json` returns 404 + Content-Length 0, while
+     *     the same path on the shop domain resolves. Test anything that touches the
+     *     proxy on a real preview URL, not localhost.
+     *   - a 302 to /password, when the storefront is password protected.
+     *   - the app's own 404 page, when [app_proxy].url has a wrong path
+     *     (it must be exactly <app base URL>/proxy) or points at a dead dev tunnel.
      *
-     * Detect both before JSON.parse turns either into "Unexpected token '<'".
+     * Read the body as text and inspect it before parsing, so none of these
+     * surface as "Unexpected end of JSON input" or "Unexpected token '<'" — those
+     * name the symptom and hide the cause.
      */
     function getJson(url) {
       return fetch(url, { headers: { Accept: 'application/json' } }).then(function (response) {
-        var type = response.headers.get('content-type') || '';
-        if (type.indexOf('application/json') === -1) {
-          var hint;
+        return response.text().then(function (raw) {
+          var type = response.headers.get('content-type') || '';
+          var context = ' (HTTP ' + response.status + ', ' + (type || 'no content type') + ')';
+
           if (response.redirected && response.url.indexOf('/password') !== -1) {
-            hint =
+            throw new Error(
               'The storefront is password protected, so the request was redirected to ' +
-              'the password page. Turn off Online Store > Preferences > Restrict access.';
-          } else if (response.status === 404) {
-            hint =
-              'The app proxy resolved to a route that does not exist. Check that ' +
-              '[app_proxy].url in shopify.app.toml is your app URL + "/proxy" with no ' +
-              'extra path segments, then run: shopify app deploy';
-          } else {
-            hint = 'Is the app running, and has a dataset been published?';
+                'the password page. Turn off Online Store > Preferences > Restrict access.'
+            );
           }
-          throw new Error(
-            'Expected JSON from ' +
-              url +
-              ' but got "' +
-              (type || 'unknown') +
-              '" (HTTP ' +
-              response.status +
-              '). ' +
-              hint
-          );
-        }
-        return response.json().then(function (body) {
+
+          if (raw === '') {
+            var isLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+            throw new Error(
+              'Empty response from ' +
+                url +
+                context +
+                '. The request never reached the app. ' +
+                (isLocal
+                  ? 'This page is on ' +
+                    location.hostname +
+                    ', and the local theme dev server does not forward app-proxy ' +
+                    'paths — it answers /apps/* itself with an empty 404. Open the ' +
+                    'preview URL on the shop domain instead.'
+                  : 'Check that [app_proxy].url in shopify.app.toml points at your ' +
+                    'current app URL + "/proxy" — a dev tunnel URL changes every time ' +
+                    'shopify app dev restarts — then run: shopify app deploy')
+            );
+          }
+
+          if (type.indexOf('application/json') === -1) {
+            throw new Error(
+              'Expected JSON from ' +
+                url +
+                context +
+                '. ' +
+                (response.status === 404
+                  ? 'The app proxy resolved to a route that does not exist. Check that ' +
+                    '[app_proxy].url is your app URL + "/proxy" with no extra path ' +
+                    'segments, then run: shopify app deploy'
+                  : 'Is the app running, and has a dataset been published?')
+            );
+          }
+
+          var body;
+          try {
+            body = JSON.parse(raw);
+          } catch (error) {
+            throw new Error('Malformed JSON from ' + url + context + ': ' + raw.slice(0, 120));
+          }
+
           if (!response.ok) {
-            throw new Error(body && body.message ? body.message : 'Request failed (' + response.status + ')');
+            throw new Error(body && body.message ? body.message : 'Request failed' + context);
           }
+
           return body;
         });
       });
@@ -287,7 +326,7 @@
     makeEl.addEventListener('change', function () {
       var slug = makeEl.value;
       reset(bodyEl, 'Select a model first');
-      reset(yearEl, 'Select a body first');
+      resetYear('Select a body first');
       hideResult();
 
       if (!slug || !skeleton[slug]) {
@@ -312,7 +351,7 @@
     });
 
     modelEl.addEventListener('change', function () {
-      reset(yearEl, 'Select a body first');
+      resetYear('Select a body first');
       hideResult();
 
       var slug = makeEl.value;
@@ -339,12 +378,12 @@
       var body = bodyEl.value;
 
       if (!body) {
-        reset(yearEl, 'Select a body first');
+        resetYear('Select a body first');
         return;
       }
 
       // First point that needs year data. Usually already cached by the prefetch.
-      reset(yearEl, cache[slug] ? 'Select year' : 'Loading…');
+      resetYear(cache[slug] ? 'Select year' : 'Loading…');
 
       loadTree(slug)
         .then(function (tree) {
@@ -353,7 +392,7 @@
 
           var branch = tree[model] && tree[model][body];
           if (!branch) {
-            reset(yearEl, 'No years found');
+            resetYear('No years found');
             return;
           }
 
@@ -367,10 +406,24 @@
             return diff !== 0 ? diff : String(b).localeCompare(String(a));
           });
 
+          // One option per vehicle, not per year range: where series overlap, the
+          // series in the label is the only thing telling the two apart, so
+          // "1979-1988 (XD-XF)" and "1979-1988 (XD-XH)" are separate choices. The
+          // series is omitted when the export has none — about two thirds of rows.
+          yearChoices = [];
+          years.forEach(function (year) {
+            (branch[year] || []).forEach(function (vehicle) {
+              yearChoices.push({ year: year, vehicle: vehicle });
+            });
+          });
+
           fill(
             yearEl,
-            years.map(function (year) {
-              return { value: year, label: year };
+            yearChoices.map(function (choice, index) {
+              return {
+                value: String(index),
+                label: choice.year + (choice.vehicle.variant ? ' (' + choice.vehicle.variant + ')' : ''),
+              };
             }),
             'Select year'
           );
@@ -378,41 +431,30 @@
         .catch(function (error) {
           if (makeEl.value !== slug || bodyEl.value !== body) return;
           status(error.message, 'error');
-          reset(yearEl, 'Unavailable');
+          resetYear('Unavailable');
         });
     });
 
     yearEl.addEventListener('change', function () {
       hideResult();
 
-      var tree = cache[makeEl.value];
-      if (!yearEl.value || !tree) return;
+      // The option value is an index into yearChoices, so the selection already
+      // identifies one vehicle even where several share the year range.
+      var choice = yearEl.value === '' ? null : yearChoices[Number(yearEl.value)];
+      if (!choice) return;
 
-      // A year range can cover more than one vehicle: series overlap, e.g. Falcon
-      // Ute "XD-XF" and "EA EB ED" both sit in 1979-1988. Always an array, even
-      // for the single-match case, so there is one code path.
-      var vehicles = tree[modelEl.value][bodyEl.value][yearEl.value];
-      if (!vehicles || !vehicles.length) return;
-
+      var vehicle = choice.vehicle;
       var parts = [];
-      for (var i = 0; i < vehicles.length; i++) {
-        var vehicle = vehicles[i];
-        parts.push('<div>');
-        parts.push('<strong>' + escapeHtml(vehicle.name) + '</strong>');
-        parts.push('<dl>');
-        parts.push('<div>Vehicle ID: ' + escapeHtml(vehicle.id) + '</div>');
-        if (vehicle.variant) {
-          parts.push('<div>Series: ' + escapeHtml(vehicle.variant) + '</div>');
-        }
-        parts.push('</dl>');
-        parts.push('</div>');
+      parts.push('<div>');
+      parts.push('<strong>' + escapeHtml(vehicle.name) + '</strong>');
+      parts.push('<dl>');
+      parts.push('<div>Years: ' + escapeHtml(choice.year) + '</div>');
+      if (vehicle.variant) {
+        parts.push('<div>Series: ' + escapeHtml(vehicle.variant) + '</div>');
       }
-
-      if (vehicles.length > 1) {
-        parts.unshift(
-          '<p>' + vehicles.length + ' vehicles match this year — pick the series that ' + 'matches yours.</p>'
-        );
-      }
+      parts.push('<div>Vehicle ID: ' + escapeHtml(vehicle.id) + '</div>');
+      parts.push('</dl>');
+      parts.push('</div>');
 
       resultEl.innerHTML = parts.join('');
       resultEl.hidden = false;
@@ -425,10 +467,11 @@
             makeSlug: makeEl.value,
             model: modelEl.value,
             body: bodyEl.value,
-            year: yearEl.value,
-            // Always a list. Consumers that only want one vehicle should check
-            // `.length` rather than assume a single match.
-            vehicles: vehicles,
+            // The year range on its own, without the series suffix the option
+            // label carries — that is in `series`.
+            year: choice.year,
+            series: vehicle.variant || '',
+            vehicle: vehicle,
           },
         })
       );
