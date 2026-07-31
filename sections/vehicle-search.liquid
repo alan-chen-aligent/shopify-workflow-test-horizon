@@ -104,15 +104,16 @@
     padding: 1rem;
     border: 1px solid rgba(0, 0, 0, 0.12);
     border-radius: 8px;
+    /* A column: one block per matching vehicle, since a year range can cover
+       several overlapping series. */
     display: flex;
+    flex-direction: column;
     gap: 1rem;
-    align-items: center;
   }
-  #vehicle-search-{{ section.id }} .vehicle-search__result img {
-    width: 120px;
-    height: auto;
-    border-radius: 6px;
-    flex: 0 0 auto;
+  #vehicle-search-{{ section.id }} .vehicle-search__result p {
+    margin: 0;
+    font-size: 0.9rem;
+    color: rgba(0, 0, 0, 0.65);
   }
   #vehicle-search-{{ section.id }} .vehicle-search__result dl {
     margin: 0.5rem 0 0;
@@ -230,8 +231,14 @@
             hint = 'Is the app running, and has a dataset been published?';
           }
           throw new Error(
-            'Expected JSON from ' + url + ' but got "' + (type || 'unknown') +
-              '" (HTTP ' + response.status + '). ' + hint
+            'Expected JSON from ' +
+              url +
+              ' but got "' +
+              (type || 'unknown') +
+              '" (HTTP ' +
+              response.status +
+              '). ' +
+              hint
           );
         }
         return response.json().then(function (body) {
@@ -350,10 +357,11 @@
             return;
           }
 
-          // Year values are not necessarily plain numbers — real data uses ranges
-          // like "2020-current" or "2015-2019". Sort on the first 4-digit year
-          // found so ranges order sensibly, then fall back to a string compare so
-          // that, for a shared start year, "2020-current" outranks "2020-2023".
+          // Year values are never plain numbers — the export gives a start and an
+          // end, published as "2015-2019" or "2018-Current". Sort on the first
+          // 4-digit year found so ranges order sensibly, then fall back to a string
+          // compare so that, for a shared start year, "2018-Current" outranks
+          // "2018-2024".
           var years = Object.keys(branch).sort(function (a, b) {
             var diff = leadingYear(b) - leadingYear(a);
             return diff !== 0 ? diff : String(b).localeCompare(String(a));
@@ -380,27 +388,33 @@
       var tree = cache[makeEl.value];
       if (!yearEl.value || !tree) return;
 
-      var vehicle = tree[modelEl.value][bodyEl.value][yearEl.value];
-      if (!vehicle) return;
+      // A year range can cover more than one vehicle: series overlap, e.g. Falcon
+      // Ute "XD-XF" and "EA EB ED" both sit in 1979-1988. Always an array, even
+      // for the single-match case, so there is one code path.
+      var vehicles = tree[modelEl.value][bodyEl.value][yearEl.value];
+      if (!vehicles || !vehicles.length) return;
 
       var parts = [];
-      parts.push('<div>');
-      parts.push('<strong>' + escapeHtml(vehicle.name) + '</strong>');
-      parts.push('<dl>');
-      parts.push('<div>Vehicle ID: ' + escapeHtml(vehicle.id) + '</div>');
-      if (vehicle.variant) {
-        parts.push('<div>Variant: ' + escapeHtml(vehicle.variant) + '</div>');
+      for (var i = 0; i < vehicles.length; i++) {
+        var vehicle = vehicles[i];
+        parts.push('<div>');
+        parts.push('<strong>' + escapeHtml(vehicle.name) + '</strong>');
+        parts.push('<dl>');
+        parts.push('<div>Vehicle ID: ' + escapeHtml(vehicle.id) + '</div>');
+        if (vehicle.variant) {
+          parts.push('<div>Series: ' + escapeHtml(vehicle.variant) + '</div>');
+        }
+        parts.push('</dl>');
+        parts.push('</div>');
       }
-      parts.push('</dl>');
-      parts.push('</div>');
 
-      var html = '';
-      if (vehicle.image) {
-        html += '<img src="' + escapeHtml(vehicle.image) + '" alt="' + escapeHtml(vehicle.name) + '" loading="lazy">';
+      if (vehicles.length > 1) {
+        parts.unshift(
+          '<p>' + vehicles.length + ' vehicles match this year — pick the series that ' + 'matches yours.</p>'
+        );
       }
-      html += parts.join('');
 
-      resultEl.innerHTML = html;
+      resultEl.innerHTML = parts.join('');
       resultEl.hidden = false;
 
       root.dispatchEvent(
@@ -412,8 +426,10 @@
             model: modelEl.value,
             body: bodyEl.value,
             year: yearEl.value,
-            vehicle: vehicle
-          }
+            // Always a list. Consumers that only want one vehicle should check
+            // `.length` rather than assume a single match.
+            vehicles: vehicles,
+          },
         })
       );
     });
