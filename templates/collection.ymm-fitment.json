@@ -2,6 +2,7 @@
   "sections": {
     "main": {
       "type": "ymm-fitment-results",
+      "name": "YMM Fitment Results",
       "blocks": {
         "product-card": {
           "type": "_product-card",
