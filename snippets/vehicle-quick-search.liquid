@@ -1,0 +1,602 @@
+{%- doc -%}
+  Free-text vehicle search — one input, a suggestion list, keyboard driven.
+
+  Talks to the "Vehicles data transformer" app proxy:
+
+    /apps/vehicle-search/search.json?q=corolla+2019
+
+  Same-origin, so no CORS, no app embed and no access token — Shopify signs the
+  request on the way through. The response:
+
+    {
+      "query": "corolla 2019",
+      "corrected": "corolla",       // only when the query matched nothing as typed
+      "total": 14,
+      "suggestions": [
+        {
+          "label": "Toyota Corolla 2019-Current Sedan",
+          "vehicleId": "…",
+          "makeModelSlug": "toyota-corolla",
+          "makeSlug": "toyota",
+          "model": "Corolla",
+          "body": "Sedan",
+          "year": "2019-Current"     // byte-identical to custom.vehicle_year_range_simple
+        }
+      ]
+    }
+
+  Picking a suggestion goes to /collections/<makeModelSlug> with the body and
+  year filters applied. To do something else instead — prefill the cascade in
+  sections/vehicle-search.liquid, say — listen for the cancelable
+  `vehicle-quick-search:select` event on the wrapper and call preventDefault();
+  the suggestion is in event.detail.suggestion.
+
+  There is no minimum query length: under 2 characters the endpoint answers 200
+  with an empty suggestions array, so the first keystroke can fire.
+
+  Renders more than once per page (the header renders a desktop and a drawer
+  copy), so every id is namespaced by `id` and the shared scripts self-guard.
+
+  @param {string} id - Unique suffix for element ids. Required when the page has
+    more than one instance.
+  @param {string} [endpoint] - App proxy path. Defaults to /apps/vehicle-search/search.json.
+  @param {string} [label] - Field label. Visually hidden, still read out.
+  @param {string} [placeholder] - Input placeholder.
+  @param {string} [collections_url] - Base collections URL. Defaults to
+    routes.collections_url, so the link keeps any locale/market prefix.
+
+  @example
+  {% render 'vehicle-quick-search', id: 'header' %}
+{%- enddoc -%}
+
+{% render 'vehicle-json' %}
+{% render 'vehicle-storage' %}
+
+{%- liquid
+  assign vqs_id = id | default: 'vqs'
+  assign vqs_endpoint = endpoint | default: '/apps/vehicle-search/search.json'
+  assign vqs_label = label | default: 'Search by vehicle'
+  assign vqs_placeholder = placeholder | default: 'Search by vehicle'
+  assign vqs_collections = collections_url | default: routes.collections_url
+-%}
+
+<div
+  class="vqs"
+  id="vqs-{{ vqs_id }}"
+  data-endpoint="{{ vqs_endpoint }}"
+  data-collections-url="{{ vqs_collections }}"
+>
+  <label class="visually-hidden" for="vqs-input-{{ vqs_id }}">{{ vqs_label }}</label>
+
+  <div class="vqs__field">
+    <span class="svg-wrapper vqs__icon" aria-hidden="true">
+      {{- 'icon-search.svg' | inline_asset_content -}}
+    </span>
+
+    {%- comment -%}
+      Combobox pattern: focus never leaves the input. Arrow keys move
+      aria-activedescendant instead, so the shopper keeps caret and keyboard on
+      the text they are still editing while the highlight walks the list.
+    {%- endcomment -%}
+    <input
+      class="vqs__input"
+      id="vqs-input-{{ vqs_id }}"
+      type="text"
+      role="combobox"
+      autocomplete="off"
+      autocorrect="off"
+      autocapitalize="off"
+      spellcheck="false"
+      aria-autocomplete="list"
+      aria-expanded="false"
+      aria-controls="vqs-list-{{ vqs_id }}"
+      placeholder="{{ vqs_placeholder }}"
+      data-role="input"
+    >
+
+    <button
+      type="button"
+      class="button-unstyled vqs__clear"
+      aria-label="{{ 'actions.clear' | t }}"
+      data-role="clear"
+      hidden
+    >
+      <span class="svg-wrapper">{{- 'icon-close.svg' | inline_asset_content -}}</span>
+    </button>
+  </div>
+
+  <div class="vqs__panel color-{{ settings.popover_color_scheme }}" data-role="panel" hidden>
+    <p class="vqs__message" data-role="note" hidden></p>
+    <ul
+      class="vqs__list"
+      id="vqs-list-{{ vqs_id }}"
+      role="listbox"
+      aria-label="{{ vqs_label | escape }}"
+      data-role="list"
+    ></ul>
+    <p class="vqs__message" data-role="empty" hidden></p>
+    <p class="vqs__message" data-role="footer" hidden></p>
+    <p class="vqs__message vqs__message--error" data-role="error" hidden></p>
+  </div>
+
+  <div class="visually-hidden" data-role="live" role="status" aria-live="polite"></div>
+</div>
+
+{% stylesheet %}
+  .vqs {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .vqs__field {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .vqs__input {
+    width: 100%;
+    min-width: 0;
+    padding-block: var(--padding-sm);
+    padding-inline: calc(var(--margin-sm) + var(--icon-size-lg)) var(--minimum-touch-target);
+    color: var(--color-input-text);
+    background-color: var(--color-input-background);
+    border: var(--style-border-width-inputs) solid var(--color-input-border);
+    border-radius: var(--style-border-radius-inputs);
+    font-size: var(--font-size--sm);
+    text-overflow: ellipsis;
+    overflow: hidden;
+  }
+
+  .vqs__input::placeholder {
+    color: rgb(var(--color-input-text-rgb) / var(--opacity-subdued-text));
+  }
+
+  .vqs__icon {
+    position: absolute;
+    left: var(--margin-xs);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--icon-size-lg);
+    height: var(--icon-size-lg);
+    color: rgb(var(--color-input-text-rgb) / var(--opacity-60));
+    pointer-events: none;
+  }
+
+  .vqs__icon svg {
+    width: var(--icon-size-md);
+    height: var(--icon-size-md);
+  }
+
+  .vqs__clear {
+    position: absolute;
+    right: var(--margin-3xs);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--minimum-touch-target);
+    height: var(--minimum-touch-target);
+    color: var(--color-input-text);
+    cursor: pointer;
+    opacity: 0.68;
+  }
+
+  .vqs__clear svg {
+    width: var(--icon-size-xs);
+    height: var(--icon-size-xs);
+  }
+
+  /* A request is in flight: a bar crossing the input, so a slow proxy looks
+     busy rather than broken. */
+  .vqs__input[aria-busy='true'] {
+    background-image: linear-gradient(
+      90deg,
+      transparent 0%,
+      rgb(var(--color-input-text-rgb) / var(--opacity-8)) 50%,
+      transparent 100%
+    );
+    background-size: 40% 100%;
+    background-repeat: no-repeat;
+    background-position: -40% 0;
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .vqs__input[aria-busy='true'] {
+      animation: vqs-busy 900ms linear infinite;
+    }
+  }
+
+  @keyframes vqs-busy {
+    to {
+      background-position: 140% 0;
+    }
+  }
+
+  .vqs__panel {
+    position: absolute;
+    z-index: var(--layer-heightened);
+    top: calc(100% + var(--margin-3xs));
+    left: 0;
+    right: 0;
+    min-width: 18rem;
+    max-width: 90vw;
+    padding-block: var(--padding-3xs);
+    background-color: var(--color-background);
+    border: var(--style-border-width) solid var(--color-border);
+    border-radius: var(--style-border-radius-popover);
+    box-shadow: var(--shadow-popover);
+    overflow: hidden;
+  }
+
+  /* Anchored to the right edge on a narrow viewport, where the input can sit
+     close enough to the edge that a left-anchored panel would overflow. */
+  @media screen and (max-width: 749px) {
+    .vqs__panel {
+      min-width: 0;
+    }
+  }
+
+  .vqs__list {
+    max-height: min(60dvh, 22rem);
+    margin: 0;
+    padding: 0;
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  .vqs__option {
+    padding-block: var(--padding-xs);
+    padding-inline: var(--padding-sm);
+    color: var(--color-foreground);
+    font-size: var(--font-size--sm);
+    line-height: 1.3;
+    cursor: pointer;
+  }
+
+  /* Keyed off aria-selected rather than :hover, so the pointer and the arrow
+     keys can never light up two different rows at once. */
+  .vqs__option[aria-selected='true'] {
+    background-color: rgb(var(--color-foreground-rgb) / var(--opacity-8));
+  }
+
+  .vqs__message {
+    margin: 0;
+    padding-block: var(--padding-2xs);
+    padding-inline: var(--padding-sm);
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-subdued-text));
+    font-size: var(--font-size--xs);
+  }
+
+  .vqs__message--error {
+    color: var(--color-error);
+  }
+{% endstylesheet %}
+
+<script>
+  (function () {
+    var root = document.getElementById('vqs-{{ vqs_id }}');
+    if (!root) return;
+
+    var ENDPOINT = root.dataset.endpoint || '/apps/vehicle-search/search.json';
+    var COLLECTIONS_URL = root.dataset.collectionsUrl || '/collections';
+
+    // Storefront filter params — Shopify applies these server-side, so the
+    // collection page arrives already narrowed. The same two the cascade in
+    // sections/vehicle-search.liquid uses; both metafields must be enabled as
+    // filters in the Search & Discovery app or Shopify ignores them in silence.
+    var YEAR_FILTER = 'filter.p.m.custom.vehicle_year_range_simple';
+    var BODY_FILTER = 'filter.p.m.custom.vehicle_body';
+
+    // Long enough that a touch typist sends one request per word rather than
+    // one per letter, short enough that the list keeps up with the typing.
+    var DEBOUNCE = 150;
+
+    var input = root.querySelector('[data-role="input"]');
+    var clearButton = root.querySelector('[data-role="clear"]');
+    var panel = root.querySelector('[data-role="panel"]');
+    var list = root.querySelector('[data-role="list"]');
+    var noteEl = root.querySelector('[data-role="note"]');
+    var emptyEl = root.querySelector('[data-role="empty"]');
+    var footerEl = root.querySelector('[data-role="footer"]');
+    var errorEl = root.querySelector('[data-role="error"]');
+    var liveEl = root.querySelector('[data-role="live"]');
+
+    var timer = null;
+    var controller = null;
+    var suggestions = [];
+    var activeIndex = -1;
+
+    /**
+     * Shared with the cascade — see snippets/vehicle-json.liquid. It names the
+     * app-proxy failures that do not arrive as JSON at all; a bare r.json()
+     * reports every one of them as "Unexpected end of JSON input", which sends
+     * you looking at the wrong end of the wire.
+     */
+    var getJson = window.YMMJson.getJson;
+
+    function show(element, text) {
+      element.textContent = text || '';
+      element.hidden = !text;
+    }
+
+    function setOpen(open) {
+      panel.hidden = !open;
+      input.setAttribute('aria-expanded', open ? 'true' : 'false');
+      if (!open) setActive(-1);
+    }
+
+    function close() {
+      setOpen(false);
+    }
+
+    /** Moves the highlight. -1 for nothing highlighted. */
+    function setActive(index) {
+      var options = list.children;
+      activeIndex = index;
+
+      for (var i = 0; i < options.length; i++) {
+        var isActive = i === index;
+        options[i].setAttribute('aria-selected', isActive ? 'true' : 'false');
+        if (isActive && options[i].scrollIntoView) {
+          options[i].scrollIntoView({ block: 'nearest' });
+        }
+      }
+
+      if (index < 0 || !options[index]) input.removeAttribute('aria-activedescendant');
+      else input.setAttribute('aria-activedescendant', options[index].id);
+    }
+
+    function move(step) {
+      if (!suggestions.length) return;
+
+      // Reopen rather than move, so Escape followed by ArrowDown brings the
+      // list back without another round trip.
+      if (panel.hidden) {
+        setOpen(true);
+        setActive(step > 0 ? 0 : suggestions.length - 1);
+        return;
+      }
+
+      var next = activeIndex + step;
+      if (next < 0) next = suggestions.length - 1;
+      if (next >= suggestions.length) next = 0;
+      setActive(next);
+    }
+
+    function busy(state) {
+      input.setAttribute('aria-busy', state ? 'true' : 'false');
+    }
+
+    function clearResults() {
+      suggestions = [];
+      list.innerHTML = '';
+      show(noteEl, '');
+      show(emptyEl, '');
+      show(footerEl, '');
+      show(errorEl, '');
+      close();
+    }
+
+    function render(data) {
+      suggestions = data.suggestions || [];
+      list.innerHTML = '';
+      show(errorEl, '');
+
+      // `corrected` is present only when the query matched nothing as typed, so
+      // its presence is the whole signal — nothing to compare it against.
+      show(noteEl, data.corrected ? 'Showing results for "' + data.corrected + '"' : '');
+
+      suggestions.forEach(function (suggestion, index) {
+        var option = document.createElement('li');
+        option.className = 'vqs__option';
+        option.id = 'vqs-{{ vqs_id }}-option-' + index;
+        option.setAttribute('role', 'option');
+        option.setAttribute('aria-selected', 'false');
+        option.dataset.index = String(index);
+        option.dataset.vehicleId = suggestion.vehicleId || '';
+        // textContent, not innerHTML — labels are shop data, not markup.
+        option.textContent = suggestion.label;
+        list.appendChild(option);
+      });
+
+      var total = typeof data.total === 'number' ? data.total : suggestions.length;
+      show(footerEl, total > suggestions.length ? 'Showing ' + suggestions.length + ' of ' + total : '');
+      show(emptyEl, suggestions.length ? '' : 'No vehicles match that search.');
+
+      setOpen(true);
+      setActive(-1);
+
+      liveEl.textContent = suggestions.length
+        ? suggestions.length + (suggestions.length === 1 ? ' vehicle' : ' vehicles') + ' found'
+        : 'No vehicles found';
+    }
+
+    function fail(message) {
+      suggestions = [];
+      list.innerHTML = '';
+      show(noteEl, '');
+      show(emptyEl, '');
+      show(footerEl, '');
+      show(errorEl, message);
+      setOpen(true);
+    }
+
+    /**
+     * Responses can arrive out of order, which is why the endpoint echoes the
+     * query back. Two guards, because they cover different races: the in-flight
+     * request is aborted on each new keystroke, and anything that lands anyway
+     * is dropped unless it answers what is in the box right now.
+     */
+    function run(term) {
+      if (controller) controller.abort();
+      controller = typeof AbortController === 'function' ? new AbortController() : null;
+
+      busy(true);
+      getJson(ENDPOINT + '?q=' + encodeURIComponent(term), controller ? { signal: controller.signal } : null)
+        .then(function (data) {
+          if (data.query !== input.value) return; // a newer keystroke won
+          busy(false);
+          render(data);
+        })
+        .catch(function (error) {
+          // An abort is this code superseding itself, and a stale failure
+          // belongs to a term the shopper has already typed past.
+          if (error && error.name === 'AbortError') return;
+          if (input.value !== term) return;
+          busy(false);
+          fail(error.message);
+        });
+    }
+
+    function schedule() {
+      var term = input.value;
+      clearTimeout(timer);
+      clearButton.hidden = term === '';
+
+      // An empty box is not a short query — there is nothing to ask about and
+      // no answer that could be right. Every other length goes to the endpoint,
+      // one character included: it replies 200 with an empty list.
+      if (term === '') {
+        if (controller) controller.abort();
+        busy(false);
+        clearResults();
+        return;
+      }
+
+      timer = setTimeout(function () {
+        run(term);
+      }, DEBOUNCE);
+    }
+
+    function reset() {
+      clearTimeout(timer);
+      if (controller) controller.abort();
+      input.value = '';
+      clearButton.hidden = true;
+      busy(false);
+      clearResults();
+    }
+
+    function remember(suggestion) {
+      if (!window.YMMVehicle) return;
+
+      window.YMMVehicle.write({
+        handle: suggestion.makeModelSlug || '',
+        makeSlug: suggestion.makeSlug || '',
+        make: suggestion.make || '',
+        model: suggestion.model || '',
+        body: suggestion.body || '',
+        year: suggestion.year || '',
+        // A suggestion carries no series: one year range can cover several, and
+        // the search has no way to know which the shopper meant.
+        series: '',
+      });
+    }
+
+    function navigate(suggestion) {
+      if (!suggestion.makeModelSlug) return;
+
+      var params = new URLSearchParams();
+      if (suggestion.body) params.set(BODY_FILTER, suggestion.body);
+      // No transformation: `year` is already the metafield's exact value,
+      // capital "Current" and all.
+      if (suggestion.year) params.set(YEAR_FILTER, suggestion.year);
+
+      var query = params.toString();
+      window.location.href = COLLECTIONS_URL + '/' + suggestion.makeModelSlug + (query ? '?' + query : '');
+    }
+
+    function choose(index) {
+      var suggestion = suggestions[index];
+      if (!suggestion) return;
+
+      input.value = suggestion.label;
+      clearButton.hidden = false;
+      close();
+
+      var claimed = !root.dispatchEvent(
+        new CustomEvent('vehicle-quick-search:select', {
+          bubbles: true,
+          cancelable: true,
+          detail: { suggestion: suggestion },
+        })
+      );
+      // A listener that took the pick owns everything after it, including what
+      // gets remembered — it knows more about the vehicle than we do.
+      if (claimed) return;
+
+      remember(suggestion);
+      navigate(suggestion);
+    }
+
+    input.addEventListener('input', schedule);
+
+    input.addEventListener('focus', function () {
+      if (suggestions.length) setOpen(true);
+    });
+
+    input.addEventListener('blur', close);
+
+    input.addEventListener('keydown', function (event) {
+      switch (event.key) {
+        case 'ArrowDown':
+          event.preventDefault();
+          move(1);
+          break;
+        case 'ArrowUp':
+          event.preventDefault();
+          move(-1);
+          break;
+        case 'Enter':
+          // Nothing highlighted takes the first suggestion: this input searches
+          // vehicles only, so there is no products page to fall through to and
+          // the top match is the one the shopper is looking at.
+          if (!panel.hidden && suggestions.length) {
+            event.preventDefault();
+            choose(activeIndex < 0 ? 0 : activeIndex);
+          }
+          break;
+        case 'Escape':
+          // First Escape closes the list, a second clears the box — the usual
+          // two-step, so a mistyped term can be abandoned without the mouse.
+          if (!panel.hidden) {
+            event.preventDefault();
+            close();
+          } else if (input.value !== '') {
+            event.preventDefault();
+            reset();
+          }
+          break;
+        case 'Tab':
+          close();
+          break;
+      }
+    });
+
+    // mousedown, not click: pressing on an option would otherwise blur the
+    // input and close the panel out from under the release.
+    panel.addEventListener('mousedown', function (event) {
+      event.preventDefault();
+    });
+
+    list.addEventListener('click', function (event) {
+      var option = event.target.closest ? event.target.closest('.vqs__option') : null;
+      if (!option) return;
+      choose(Number(option.dataset.index));
+    });
+
+    list.addEventListener('mousemove', function (event) {
+      var option = event.target.closest ? event.target.closest('.vqs__option') : null;
+      if (!option) return;
+      var index = Number(option.dataset.index);
+      if (index !== activeIndex) setActive(index);
+    });
+
+    clearButton.addEventListener('click', function () {
+      reset();
+      input.focus();
+    });
+  })();
+</script>

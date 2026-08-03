@@ -1,0 +1,111 @@
+{%- doc -%}
+  Defines window.YMMJson.getJson — the fetch used by everything that talks to
+  the "Vehicles data transformer" app proxy:
+
+    /apps/vehicle-search/vehicles.json   -> the Make > Model > Body > Year tree
+    /apps/vehicle-search/search.json     -> free-text vehicle suggestions
+
+  It exists because the interesting failures on an app-proxy path do not arrive
+  as JSON at all, and `response.json()` reports every one of them as a parse
+  error. This reads the body as text first and names the actual cause.
+
+  Render before any script that calls it. Safe to render more than once.
+
+  @example
+  {% render 'vehicle-json' %}
+{%- enddoc -%}
+<script>
+  (function () {
+    if (window.YMMJson) return;
+
+    /**
+     * Three things arrive where we expect JSON, each needing a different fix:
+     *
+     *   - an EMPTY body with a 404. **`shopify theme dev` does not forward
+     *     app-proxy paths.** Its local server proxies ordinary storefront requests
+     *     to the shop but answers `/apps/*` itself with a zero-length 404, so the
+     *     request never reaches the app. Verified 2026-07-31: `/` returns the theme,
+     *     `/apps/vehicle-search/vehicles.json` returns 404 + Content-Length 0, while
+     *     the same path on the shop domain resolves. Test anything that touches the
+     *     proxy on a real preview URL, not localhost.
+     *   - a 302 to /password, when the storefront is password protected.
+     *   - the app's own 404 page, when [app_proxy].url has a wrong path
+     *     (it must be exactly <app base URL>/proxy) or points at a dead dev tunnel.
+     *
+     * Read the body as text and inspect it before parsing, so none of these
+     * surface as "Unexpected end of JSON input" or "Unexpected token '<'" — those
+     * name the symptom and hide the cause.
+     *
+     * @param {string} url
+     * @param {Object} [options] - Pass `signal` (an AbortSignal) to cancel a
+     *   superseded request. An abort rejects with a DOMException whose name is
+     *   'AbortError'; callers are expected to swallow that one.
+     */
+    function getJson(url, options) {
+      var init = { headers: { Accept: 'application/json' } };
+      if (options && options.signal) init.signal = options.signal;
+
+      return fetch(url, init).then(function (response) {
+        return response.text().then(function (raw) {
+          var type = response.headers.get('content-type') || '';
+          var context = ' (HTTP ' + response.status + ', ' + (type || 'no content type') + ')';
+
+          if (response.redirected && response.url.indexOf('/password') !== -1) {
+            throw new Error(
+              'The storefront is password protected, so the request was redirected to ' +
+                'the password page. Turn off Online Store > Preferences > Restrict access.'
+            );
+          }
+
+          if (raw === '') {
+            var isLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+            throw new Error(
+              'Empty response from ' +
+                url +
+                context +
+                '. The request never reached the app. ' +
+                (isLocal
+                  ? 'This page is on ' +
+                    location.hostname +
+                    ', and the local theme dev server does not forward app-proxy ' +
+                    'paths — it answers /apps/* itself with an empty 404. Open the ' +
+                    'preview URL on the shop domain instead.'
+                  : 'Check that [app_proxy].url in shopify.app.toml points at your ' +
+                    'current app URL + "/proxy" — a dev tunnel URL changes every time ' +
+                    'shopify app dev restarts — then run: shopify app deploy')
+            );
+          }
+
+          if (type.indexOf('application/json') === -1) {
+            throw new Error(
+              'Expected JSON from ' +
+                url +
+                context +
+                '. ' +
+                (response.status === 404
+                  ? 'The app proxy resolved to a route that does not exist. Check that ' +
+                    '[app_proxy].url is your app URL + "/proxy" with no extra path ' +
+                    'segments, then run: shopify app deploy'
+                  : 'Is the app running, and has a dataset been published?')
+            );
+          }
+
+          var body;
+          try {
+            body = JSON.parse(raw);
+          } catch (error) {
+            throw new Error('Malformed JSON from ' + url + context + ': ' + raw.slice(0, 120));
+          }
+
+          if (!response.ok) {
+            throw new Error(body && body.message ? body.message : 'Request failed' + context);
+          }
+
+          return body;
+        });
+      });
+    }
+
+    window.YMMJson = { getJson: getJson };
+  })();
+</script>

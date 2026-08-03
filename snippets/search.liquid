@@ -1,33 +1,37 @@
 {%- doc -%}
-  Renders the search action button.
+  Renders the header search.
 
-  @param {string} [style] - The style of the search action.
-  @param {string} [class] - Additional classes for the search action.
-  @param {string} [display_style] - The display style ('icon' or 'text').
+  This is the vehicle search, not Shopify's product search: the icon button that
+  used to open the predictive-search modal is gone, and the header now carries
+  the free-text vehicle input inline. Picking a suggestion goes straight to that
+  vehicle's collection. See snippets/vehicle-quick-search.liquid.
+
+  The header renders this up to twice — once for the desktop menu layout and
+  once for the mobile drawer layout — and shows one at a time through the
+  --hidden-on-drawer / --hidden-on-menu classes. Both copies are live inputs, so
+  each needs its own `id`.
+
+  @param {string} [style] - 'none' renders nothing. Comes from the header's
+    "Show search" setting.
+  @param {string} [class] - Additional classes for the wrapper.
+  @param {string} [id] - Unique suffix for element ids. Required whenever the
+    page renders more than one copy.
+
+  The old icon button also took `display_style`, to render as an icon or as the
+  word "Search". An input is neither, so the header no longer passes it.
 
   @example
-  {% render 'search', style: 'default', class: 'custom-class', display_style: 'icon' %}
+  {% render 'search', style: 'inline', id: 'header' %}
 {%- enddoc -%}
 
-{% unless style == 'none' %}
-  <search-button
-    class="search-action{% if display_style == 'text' %} search-action--text{% endif %}{% if class != blank %} {{ class | strip }}{% endif %}"
-  >
-    <button
-      on:click="#search-modal/showDialog"
-      class="button-unstyled header-actions__action{% if display_style == 'text' %} header-actions__text-style{% endif %}"
-      aria-label="{{ 'content.search_input_label' | t }}"
-      aria-haspopup="dialog"
-    >
-      <span class="{% if display_style == 'icon' %}hidden{% else %}mobile:hidden{% endif %}">
-        {{ 'content.search' | t }}
-      </span>
+{%- assign search_id = id | default: 'header' -%}
 
-      <span class="svg-wrapper {% if display_style != 'icon' %}desktop:hidden{% endif %}">
-        {{ 'icon-search.svg' | inline_asset_content }}
-      </span>
-    </button>
-  </search-button>
+{% unless style == 'none' %}
+  <div
+    class="search-action search-action--vehicle{% if class != blank %} {{ class | strip }}{% endif %}"
+  >
+    {% render 'vehicle-quick-search', id: search_id %}
+  </div>
 {% endunless %}
 
 {% stylesheet %}
@@ -36,6 +40,22 @@
     --search-border-width: var(--style-border-width-inputs);
 
     display: flex;
+  }
+
+  /* An input, unlike the icon button this replaced, wants the room it can get —
+     but not the whole column, or the logo and the menu lose theirs. */
+  .search-action--vehicle {
+    flex: 1 1 auto;
+    min-width: 10rem;
+    max-width: 24rem;
+  }
+
+  /* The panel has a minimum width of its own, so a narrow input in the right
+     column would push it off the edge of the page. Anchor it to the right
+     there and it grows inwards instead. */
+  .header__column--right .search-action--vehicle .vqs__panel {
+    left: auto;
+    right: 0;
   }
 
   @media screen and (max-width: 749px) {
@@ -54,25 +74,18 @@
     }
   }
 
-  [data-menu-style='menu'] .header__column--left .search-action {
-    @media screen and (min-width: 750px) {
-      margin-inline: calc(var(--padding-lg) * -1);
-    }
-  }
-
-  .header__column--right .search-action {
-    @media screen and (min-width: 750px) {
-      margin-inline: calc(var(--gap-md) * -1) calc(var(--gap-xs) * -1);
-    }
-  }
-
-  @media screen and (min-width: 750px) {
-    .header__column--right .search-action--text {
-      margin-inline: 0;
-    }
-
-    [data-menu-style='menu'] .header__column--left .search-action--text {
-      margin-inline: 0;
+  /* On mobile the header columns collapse into a five-slot grid of 44px
+     bookends around the logo — a slot sized for the old icon. The input takes a
+     row of its own underneath instead, where it has the width to be typed into.
+     Specificity beats .header__columns .search-action from sections/header.liquid
+     regardless of which stylesheet the theme concatenates first. */
+  @media screen and (max-width: 749px) {
+    .header__columns .search-action--vehicle.search-action {
+      grid-area: auto;
+      grid-column: 1 / -1;
+      grid-row: 2;
+      max-width: none;
+      margin-block-start: var(--margin-xs);
     }
   }
 {% endstylesheet %}

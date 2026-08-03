@@ -127,7 +127,12 @@
       {% sections 'footer-group' %}
     </footer>
 
-    {% render 'search-modal' %}
+    {%- comment -%}
+      The predictive-search modal used to live here. Nothing opens it now that
+      the header carries the vehicle search inline (snippets/search.liquid), so
+      rendering it only cost every page a hidden dialog and predictive-search.js.
+      Restore with {% render 'search-modal' %} to bring product search back.
+    {%- endcomment -%}
 
     {% if settings.quick_add or settings.mobile_quick_add %}
       {% render 'quick-add-modal' %}

@@ -15,6 +15,7 @@
 {%- endcomment -%}
 
 {% render 'vehicle-storage' %}
+{% render 'vehicle-json' %}
 
 <div
   class="vehicle-search"
@@ -254,85 +255,11 @@
       resultEl.innerHTML = '';
     }
 
-    /**
-     * Three things arrive where we expect JSON, each needing a different fix:
-     *
-     *   - an EMPTY body with a 404. **`shopify theme dev` does not forward
-     *     app-proxy paths.** Its local server proxies ordinary storefront requests
-     *     to the shop but answers `/apps/*` itself with a zero-length 404, so the
-     *     request never reaches the app. Verified 2026-07-31: `/` returns the theme,
-     *     `/apps/vehicle-search/vehicles.json` returns 404 + Content-Length 0, while
-     *     the same path on the shop domain resolves. Test anything that touches the
-     *     proxy on a real preview URL, not localhost.
-     *   - a 302 to /password, when the storefront is password protected.
-     *   - the app's own 404 page, when [app_proxy].url has a wrong path
-     *     (it must be exactly <app base URL>/proxy) or points at a dead dev tunnel.
-     *
-     * Read the body as text and inspect it before parsing, so none of these
-     * surface as "Unexpected end of JSON input" or "Unexpected token '<'" — those
-     * name the symptom and hide the cause.
-     */
-    function getJson(url) {
-      return fetch(url, { headers: { Accept: 'application/json' } }).then(function (response) {
-        return response.text().then(function (raw) {
-          var type = response.headers.get('content-type') || '';
-          var context = ' (HTTP ' + response.status + ', ' + (type || 'no content type') + ')';
-
-          if (response.redirected && response.url.indexOf('/password') !== -1) {
-            throw new Error(
-              'The storefront is password protected, so the request was redirected to ' +
-                'the password page. Turn off Online Store > Preferences > Restrict access.'
-            );
-          }
-
-          if (raw === '') {
-            var isLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
-            throw new Error(
-              'Empty response from ' +
-                url +
-                context +
-                '. The request never reached the app. ' +
-                (isLocal
-                  ? 'This page is on ' +
-                    location.hostname +
-                    ', and the local theme dev server does not forward app-proxy ' +
-                    'paths — it answers /apps/* itself with an empty 404. Open the ' +
-                    'preview URL on the shop domain instead.'
-                  : 'Check that [app_proxy].url in shopify.app.toml points at your ' +
-                    'current app URL + "/proxy" — a dev tunnel URL changes every time ' +
-                    'shopify app dev restarts — then run: shopify app deploy')
-            );
-          }
-
-          if (type.indexOf('application/json') === -1) {
-            throw new Error(
-              'Expected JSON from ' +
-                url +
-                context +
-                '. ' +
-                (response.status === 404
-                  ? 'The app proxy resolved to a route that does not exist. Check that ' +
-                    '[app_proxy].url is your app URL + "/proxy" with no extra path ' +
-                    'segments, then run: shopify app deploy'
-                  : 'Is the app running, and has a dataset been published?')
-            );
-          }
-
-          var body;
-          try {
-            body = JSON.parse(raw);
-          } catch (error) {
-            throw new Error('Malformed JSON from ' + url + context + ': ' + raw.slice(0, 120));
-          }
-
-          if (!response.ok) {
-            throw new Error(body && body.message ? body.message : 'Request failed' + context);
-          }
-
-          return body;
-        });
-      });
-    }
+    // Reads the body as text and inspects it before parsing, so an app-proxy
+    // misconfiguration is named rather than reported as "Unexpected end of JSON
+    // input". Shared with the header's vehicle search — see
+    // snippets/vehicle-json.liquid, rendered above.
+    var getJson = window.YMMJson.getJson;
 
     function loadMakes() {
       status('Loading vehicles…');
