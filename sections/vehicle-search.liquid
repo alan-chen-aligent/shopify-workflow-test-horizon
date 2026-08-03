@@ -14,6 +14,8 @@
   to any template from the theme editor.
 {%- endcomment -%}
 
+{% render 'vehicle-storage' %}
+
 <div
   class="vehicle-search"
   id="vehicle-search-{{ section.id }}"
@@ -41,7 +43,12 @@
       </select>
     </div>
 
-    <div class="vehicle-search__field">
+    {%- comment -%}
+      Hidden until a model turns out to have more than one body type. A model
+      with a single body has nothing to choose, so the field is noise — but the
+      value is still selected behind the scenes and still sent as a filter.
+    {%- endcomment -%}
+    <div class="vehicle-search__field" data-role="body-field" hidden>
       <label for="vs-body-{{ section.id }}">Body</label>
       <select id="vs-body-{{ section.id }}" data-role="body" disabled>
         <option value="">Select a model first</option>
@@ -149,6 +156,7 @@
     var makeEl = root.querySelector('[data-role="make"]');
     var modelEl = root.querySelector('[data-role="model"]');
     var bodyEl = root.querySelector('[data-role="body"]');
+    var bodyFieldEl = root.querySelector('[data-role="body-field"]');
     var yearEl = root.querySelector('[data-role="year"]');
     var statusEl = root.querySelector('[data-role="status"]');
     var resultEl = root.querySelector('[data-role="result"]');
@@ -166,6 +174,11 @@
     // option value is an index into this array rather than the year string — no
     // delimiter to escape, and no ambiguity when two options share a year.
     var yearChoices = [];
+
+    // True once the Year select has reached a final state for the current body
+    // — filled, empty because the data has none, or failed. Distinguishes "no
+    // years to pick" from "years have not arrived yet".
+    var yearsSettled = false;
     // slug -> in-flight request, so a background prefetch and a later click on
     // the same Make share one request instead of racing.
     var pending = {};
@@ -229,6 +242,10 @@
      */
     function resetYear(placeholder) {
       yearChoices = [];
+      // Back to "not settled": an empty yearChoices means the years are still
+      // loading far more often than it means there are none, so the Find button
+      // must not read it as "nothing to choose".
+      yearsSettled = false;
       reset(yearEl, placeholder);
     }
 
@@ -344,6 +361,10 @@
               ? index.vehicleCount.toLocaleString() + ' vehicles across ' + makes.length + ' makes'
               : ''
           );
+
+          // Only now is `skeleton` populated, so this is the first point a
+          // remembered vehicle can be validated against the real catalogue.
+          restore();
         })
         .catch(function (error) {
           status(error.message, 'error');
@@ -351,9 +372,15 @@
         });
     }
 
-    makeEl.addEventListener('change', function () {
+    // ── Cascade ────────────────────────────────────────────────────
+    // Each step is a named function rather than an inline listener so that
+    // restoring a remembered vehicle can replay the same cascade, instead of
+    // dispatching synthetic change events and hoping the handlers agree.
+
+    function onMakeChange() {
       var slug = makeEl.value;
       reset(bodyEl, 'Select a model first');
+      setBodyFieldVisible(false);
       resetYear('Select a body first');
       hideResult();
       refreshFind();
@@ -377,30 +404,64 @@
       loadTree(slug).catch(function () {
         /* Surfaced on Body change, where it actually blocks the user. */
       });
-    });
+    }
 
-    modelEl.addEventListener('change', function () {
+    function setBodyFieldVisible(visible) {
+      if (bodyFieldEl) bodyFieldEl.hidden = !visible;
+    }
+
+    /**
+     * Returns a promise, because a model with exactly one body type resolves
+     * that choice itself and runs straight on to loading the years.
+     */
+    function onModelChange() {
       resetYear('Select a body first');
       hideResult();
-      refreshFind();
 
       var slug = makeEl.value;
       if (!modelEl.value || !skeleton[slug]) {
         reset(bodyEl, 'Select a model first');
-        return;
+        setBodyFieldVisible(false);
+        refreshFind();
+        return Promise.resolve();
       }
 
       // Instant — body names also came down with the index.
+      var bodies = skeleton[slug].models[modelEl.value] || [];
+
       fill(
         bodyEl,
-        (skeleton[slug].models[modelEl.value] || []).map(function (body) {
+        bodies.map(function (body) {
           return { value: body, label: body };
         }),
         'Select body'
       );
-    });
 
-    bodyEl.addEventListener('change', function () {
+      if (bodies.length === 0) {
+        setBodyFieldVisible(false);
+        resetYear('No years found');
+        yearsSettled = true;
+        refreshFind();
+        return Promise.resolve();
+      }
+
+      // One body is not a choice. Select it silently and keep the field out of
+      // the way — the value is still set, so it is still sent as a filter and
+      // the URL is never short a body param.
+      if (bodies.length === 1) {
+        setBodyFieldVisible(false);
+        bodyEl.value = bodies[0];
+        refreshFind();
+        return onBodyChange();
+      }
+
+      setBodyFieldVisible(true);
+      refreshFind();
+      return Promise.resolve();
+    }
+
+    /** Returns a promise so a restore can wait for the Year options to exist. */
+    function onBodyChange() {
       hideResult();
 
       var slug = makeEl.value;
@@ -409,13 +470,15 @@
 
       if (!body) {
         resetYear('Select a body first');
-        return;
+        refreshFind();
+        return Promise.resolve();
       }
 
       // First point that needs year data. Usually already cached by the prefetch.
       resetYear(cache[slug] ? 'Select year' : 'Loading…');
+      refreshFind();
 
-      loadTree(slug)
+      return loadTree(slug)
         .then(function (tree) {
           // The user may have changed an earlier select while this was in flight.
           if (makeEl.value !== slug || modelEl.value !== model || bodyEl.value !== body) return;
@@ -423,6 +486,8 @@
           var branch = tree[model] && tree[model][body];
           if (!branch) {
             resetYear('No years found');
+            yearsSettled = true;
+            refreshFind();
             return;
           }
 
@@ -457,16 +522,23 @@
             }),
             'Select year'
           );
+
+          yearsSettled = true;
+          refreshFind();
         })
         .catch(function (error) {
           if (makeEl.value !== slug || bodyEl.value !== body) return;
           status(error.message, 'error');
           resetYear('Unavailable');
+          yearsSettled = true;
+          refreshFind();
         });
-    });
+    }
 
-    yearEl.addEventListener('change', function () {
+    function onYearChange() {
       hideResult();
+      // Before the early return below, so clearing the year re-disables Find.
+      refreshFind();
 
       // The option value is an index into yearChoices, so the selection already
       // identifies one vehicle even where several share the year range.
@@ -505,6 +577,26 @@
           },
         })
       );
+    }
+
+    makeEl.addEventListener('change', function () {
+      onMakeChange();
+      persist();
+    });
+
+    modelEl.addEventListener('change', function () {
+      onModelChange();
+      persist();
+    });
+
+    bodyEl.addEventListener('change', function () {
+      onBodyChange();
+      persist();
+    });
+
+    yearEl.addEventListener('change', function () {
+      onYearChange();
+      persist();
     });
 
     /**
@@ -534,8 +626,29 @@
       return slugify(makeEl.value + '-' + modelEl.value);
     }
 
+    /**
+     * A body is only required when its field is on screen. A hidden field means
+     * there was nothing to choose — either a single body, already selected, or
+     * none at all.
+     */
+    function hasRequiredBody() {
+      if (!bodyFieldEl || bodyFieldEl.hidden) return true;
+      return bodyEl.value !== '';
+    }
+
+    /**
+     * A year is required whenever there is one to pick. Until the years settle
+     * the answer is no, so the button cannot go live during the fetch and then
+     * have the requirement appear underneath the shopper.
+     */
+    function hasRequiredYear() {
+      if (!yearsSettled) return false;
+      if (!yearChoices.length) return true;
+      return yearEl.value !== '';
+    }
+
     function refreshFind() {
-      findEl.disabled = !collectionHandle();
+      findEl.disabled = !collectionHandle() || !hasRequiredBody() || !hasRequiredYear();
     }
 
     /**
@@ -562,6 +675,131 @@
       var query = params.toString();
       window.location.href = COLLECTIONS_URL + '/' + handle + (query ? '?' + query : '');
     });
+
+    // ── Remembering the vehicle ────────────────────────────────────
+
+    var store = window.YMMVehicle;
+
+    // Replaying a saved vehicle fires the same cascade steps a shopper would,
+    // and each of those clears the selects below it. Without this guard the
+    // first replayed step would persist a half-empty vehicle over the very
+    // record being restored.
+    var restoring = false;
+
+    function currentChoice() {
+      return yearEl.value === '' ? null : yearChoices[Number(yearEl.value)];
+    }
+
+    /** Saves whatever is selected now, including a partial selection. */
+    function persist() {
+      if (restoring || !store) return;
+
+      var choice = currentChoice();
+
+      store.write({
+        handle: collectionHandle() || '',
+        makeSlug: makeEl.value,
+        make: makeEl.value ? makeEl.options[makeEl.selectedIndex].textContent : '',
+        model: modelEl.value,
+        body: bodyEl.value,
+        year: choice ? choice.year : '',
+        series: choice && choice.vehicle.variant ? choice.vehicle.variant : '',
+      });
+    }
+
+    /**
+     * Recovers a make and model from a collection handle, for a vehicle stored
+     * by the results page — which knows the handle but not how it was built.
+     *
+     * Make slugs can themselves contain hyphens ("mercedes-benz"), so a plain
+     * split is ambiguous; the longest matching make slug wins.
+     */
+    function resolveFromHandle(handle) {
+      var best = null;
+
+      Object.keys(skeleton).forEach(function (slug) {
+        var prefix = slug + '-';
+        if (handle.indexOf(prefix) !== 0) return;
+        if (best && best.slug.length >= slug.length) return;
+
+        var modelSlug = handle.slice(prefix.length);
+        Object.keys(skeleton[slug].models).forEach(function (model) {
+          if (slugify(model) === modelSlug) best = { slug: slug, model: model };
+        });
+      });
+
+      return best;
+    }
+
+    /**
+     * Prefills from the remembered vehicle. Every step is verified against the
+     * options actually present — the catalogue may have changed since the
+     * vehicle was saved — and stops at the first value that no longer exists,
+     * leaving the shopper with a valid partial selection rather than a wrong one.
+     */
+    function restore() {
+      if (!store) return;
+
+      var saved = store.read();
+      if (!saved) return;
+
+      var makeSlug = saved.makeSlug;
+      var model = saved.model;
+
+      if ((!makeSlug || !model) && saved.handle) {
+        var resolved = resolveFromHandle(saved.handle);
+        if (resolved) {
+          makeSlug = resolved.slug;
+          model = resolved.model;
+        }
+      }
+
+      if (!makeSlug || !skeleton[makeSlug]) return;
+
+      restoring = true;
+
+      function done() {
+        restoring = false;
+      }
+
+      makeEl.value = makeSlug;
+      if (makeEl.value !== makeSlug) return done();
+      onMakeChange();
+
+      if (!model) return done();
+      modelEl.value = model;
+      if (modelEl.value !== model) return done();
+
+      onModelChange()
+        .then(function () {
+          // A single-body model has already picked its body and loaded years.
+          if (bodyEl.value) return;
+          if (!saved.body) return;
+
+          bodyEl.value = saved.body;
+          if (bodyEl.value !== saved.body) return;
+          return onBodyChange();
+        })
+        .then(function () {
+          // Empty whenever the chain stopped short of loading a body's years.
+          if (!saved.year || !yearChoices.length) return;
+
+          // Matched on the year range alone. The series is a label on the year
+          // rather than part of the vehicle's identity, so where two choices
+          // share a range the first is as good as the other.
+          for (var index = 0; index < yearChoices.length; index++) {
+            if (yearChoices[index].year === saved.year) {
+              yearEl.value = String(index);
+              onYearChange();
+              return;
+            }
+          }
+        })
+        .catch(function () {
+          /* Year data unavailable — the make/model/body prefill still stands. */
+        })
+        .then(done);
+    }
 
     /** First 4-digit year in a value, or -1 if there isn't one. */
     function leadingYear(value) {

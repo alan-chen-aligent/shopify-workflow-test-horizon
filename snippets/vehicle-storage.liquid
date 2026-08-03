@@ -1,0 +1,91 @@
+{%- doc -%}
+  Defines window.YMMVehicle — the shopper's remembered vehicle, shared by the
+  vehicle selector (sections/vehicle-search.liquid) and the fitment results
+  page (sections/ymm-fitment-results.liquid).
+
+  Stored shape, all keys optional:
+
+    {
+      handle:   'toyota-corolla',   // collection handle, the canonical key
+      makeSlug: 'toyota',
+      make:     'Toyota',
+      model:    'Corolla',
+      body:     'Hatch',
+      year:     '2019-Current',
+      series:   'ZRE182',
+      updatedAt: 1735689600000
+    }
+
+  localStorage rather than a cookie: Shopify Liquid cannot read request cookies,
+  so a cookie would buy no server-side rendering, and localStorage is not sent
+  on every request. Every access is guarded — storage throws outright in Safari
+  private browsing and when a shopper blocks site data.
+
+  Render before any script that uses it. Safe to render more than once per page.
+
+  @example
+  {% render 'vehicle-storage' %}
+{%- enddoc -%}
+<script>
+  (function () {
+    if (window.YMMVehicle) return;
+
+    var KEY = 'ymm:vehicle:v1';
+
+    function readRaw() {
+      try {
+        return window.localStorage.getItem(KEY);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    window.YMMVehicle = {
+      KEY: KEY,
+
+      /** The stored vehicle, or null when absent, unreadable or corrupt. */
+      read: function () {
+        var raw = readRaw();
+        if (!raw) return null;
+        try {
+          var value = JSON.parse(raw);
+          return value && typeof value === 'object' ? value : null;
+        } catch (error) {
+          // Corrupt entry — drop it rather than failing on every page load.
+          window.YMMVehicle.clear();
+          return null;
+        }
+      },
+
+      /** Replaces the stored vehicle outright. Returns what was written. */
+      write: function (vehicle) {
+        var value = vehicle || {};
+        value.updatedAt = Date.now();
+        try {
+          window.localStorage.setItem(KEY, JSON.stringify(value));
+        } catch (error) {
+          /* Quota or blocked storage — remembering is best-effort. */
+        }
+        return value;
+      },
+
+      /** Applies a partial update, keeping keys the caller did not supply. */
+      merge: function (patch) {
+        var current = window.YMMVehicle.read() || {};
+        var key;
+        for (key in patch) {
+          if (Object.prototype.hasOwnProperty.call(patch, key)) current[key] = patch[key];
+        }
+        return window.YMMVehicle.write(current);
+      },
+
+      clear: function () {
+        try {
+          window.localStorage.removeItem(KEY);
+        } catch (error) {
+          /* Nothing to do — see write(). */
+        }
+      },
+    };
+  })();
+</script>

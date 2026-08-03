@@ -42,6 +42,75 @@
 {% endcapture %}
 {% assign product_card_size = product_card_size | strip %}
 
+{%- liquid
+  # Read the applied filter values by param name, so the remembered vehicle
+  # records what Shopify actually filtered on rather than what the URL claimed.
+  assign year_param = 'filter.p.m.custom.vehicle_year_range_simple'
+  assign body_param = 'filter.p.m.custom.vehicle_body'
+  assign active_year = ''
+  assign active_body = ''
+
+  for filter in collection.filters
+    if filter.param_name == year_param
+      for value in filter.active_values
+        assign active_year = value.value
+      endfor
+    elsif filter.param_name == body_param
+      for value in filter.active_values
+        assign active_body = value.value
+      endfor
+    endif
+  endfor
+-%}
+
+{% render 'vehicle-storage' %}
+
+{%- comment -%}
+  Case 2 of remembering a vehicle: the shopper landed here directly — a shared
+  link, a bookmark, a search result — rather than coming through the selector.
+  The URL is the truth about which vehicle they are looking at, so it is written
+  back to storage for the selector to prefill from on the next page.
+
+  Runs synchronously, while the selector restores only after its app-proxy fetch
+  resolves, so this always wins if both sections are on the same page.
+{%- endcomment -%}
+<script>
+  (function () {
+    var store = window.YMMVehicle;
+    if (!store) return;
+
+    var page = {
+      handle: {{ collection.handle | json }},
+      title: {{ collection.title | json }},
+      year: {{ active_year | json }},
+      body: {{ active_body | json }}
+    };
+
+    var saved = store.read();
+
+    if (!saved || saved.handle !== page.handle) {
+      // A different vehicle — replace outright. makeSlug and model are left
+      // unset on purpose: only the selector holds the catalogue needed to split
+      // a handle back into a make and a model, so it derives them on restore.
+      store.write({
+        handle: page.handle,
+        title: page.title,
+        year: page.year,
+        body: page.body
+      });
+      return;
+    }
+
+    // Same vehicle. Year and body are only overwritten when this page actually
+    // filtered on them — arriving unfiltered, from a menu link say, should not
+    // erase the narrower selection the shopper made earlier.
+    var patch = { title: page.title };
+    if (page.body) patch.body = page.body;
+    if (page.year) patch.year = page.year;
+    store.merge(patch);
+  })();
+</script>
+
 {% style %}
   .ymm-results--{{ section.id }} {
     --product-grid-gap-mobile: {{ section.settings.columns_gap_vertical | at_most: 12 }}px {{ section.settings.columns_gap_horizontal | at_most: 12 }}px;
@@ -387,9 +456,17 @@
       root.style.setProperty('--ymm-tabs-height', tabsEl.offsetHeight + 'px');
     }
 
-    function headerHeight() {
-      var raw = getComputedStyle(document.documentElement).getPropertyValue('--header-height');
-      return parseFloat(raw) || 0;
+    /**
+     * Where an anchor jump actually parks this group: its own scroll-margin-top,
+     * which already accounts for the sticky header and tab strip.
+     *
+     * Read from the computed style rather than recalculated, so the spy and the
+     * browser can never disagree. They did: the spy used a hardcoded 4px slack
+     * where the CSS uses --padding-sm, leaving a clicked group a few pixels
+     * below the threshold and the tab above it highlighted instead.
+     */
+    function restingOffset(group) {
+      return parseFloat(getComputedStyle(group).scrollMarginTop) || 0;
     }
 
     function setActive(id) {
@@ -399,13 +476,14 @@
       });
     }
 
-    /** The last group whose top has passed under the sticky strip wins. */
+    /** The last group that has reached its resting position wins. */
     function sync() {
-      var threshold = headerHeight() + tabsEl.offsetHeight + 4;
       var active = groups[0];
 
       groups.forEach(function (group) {
-        if (group.getBoundingClientRect().top <= threshold) active = group;
+        // 2px of slack absorbs the sub-pixel rounding a smooth scroll can leave
+        // behind, which would otherwise miss the group by a fraction.
+        if (group.getBoundingClientRect().top <= restingOffset(group) + 2) active = group;
       });
 
       // A short last group may never reach the threshold, which would leave the
