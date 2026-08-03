@@ -14,8 +14,6 @@
   for free, instead of a second card implementation drifting in JS.
 {% endcomment %}
 
-{% render 'ymm-data' %}
-
 {% liquid
   # A "collection" setting resolves to the collection object itself.
   assign universal_collection = section.settings.universal_collection
@@ -41,115 +39,55 @@
   }
 {% endstyle %}
 
-<div class="section-background color-{{ section.settings.color_scheme }}"></div>
-<div
-  class="
-    section
-    {% if section.settings.product_grid_width == 'centered' %}section--page-width{% else %}section--full-width{% endif %}
-    color-{{ section.settings.color_scheme }}
-    ymm-results ymm-results--{{ section.id }}
-    spacing-style
-  "
-  style="{% render 'spacing-style', settings: section.settings %}"
-  data-collection-handle="{{ collection.handle }}"
-  data-change-vehicle-url="{{ section.settings.change_vehicle_url | default: routes.root_url }}"
->
-  <div class="ymm__toolbar" data-role="toolbar" hidden>
-    <p class="ymm__status" data-role="status"></p>
+{%- comment -%}
+  Card pool. Every candidate product for this collection is rendered once,
+  hidden, carrying the attributes the script filters and sorts on. The script
+  moves these <li> nodes into the per-category grids — it never re-creates
+  them, so a card in the grid is byte-for-byte the theme's product card.
+{%- endcomment -%}
+<ul class="ymm__pool" data-role="pool" hidden>
+  {%- for product in collection.products limit: product_limit -%}
+    {%- liquid
+      assign fitment_attr = ''
+      assign fitment_groups = product.metafields.custom.fitment_groups.value
 
-    <div class="ymm__toolbar-actions">
-      <a class="ymm__change link" href="{{ section.settings.change_vehicle_url | default: routes.root_url }}">
-        &larr; Change vehicle
-      </a>
+      if fitment_groups != blank
+        # Delimited on both ends so an indexOf('|key|') match cannot straddle
+        # two group keys or hit a prefix of a longer one.
+        assign fitment_attr = fitment_groups | join: '|'
+        assign fitment_attr = '|' | append: fitment_attr | append: '|'
+      endif
+    -%}
+    <li
+      class="product-grid__item"
+      data-product-id="{{ product.id }}"
+      data-type="{{ product.type | default: 'Other' | escape }}"
+      data-title="{{ product.title | escape }}"
+      data-price="{{ product.price }}"
+      data-fitment-groups="{{ fitment_attr | escape }}"
+    >
+      {% # theme-check-disable %}
+      {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
+      {% # theme-check-enable %}
+    </li>
+  {%- endfor -%}
 
-      <label class="ymm__sort-label" for="ymm-sort-{{ section.id }}">Sort by</label>
-      <select id="ymm-sort-{{ section.id }}" class="ymm__sort-select" data-role="sort">
-        <option value="default">Featured</option>
-        <option value="price_asc">Price: Low to High</option>
-        <option value="price_desc">Price: High to Low</option>
-        <option value="title_asc">A–Z</option>
-        <option value="title_desc">Z–A</option>
-      </select>
-    </div>
-  </div>
-
-  <div class="ymm__layout">
-    <aside class="ymm__sidebar" data-role="sidebar" hidden aria-label="Product categories">
-      <nav class="ymm__sidebar-nav">
-        <p class="ymm__sidebar-heading">Browse</p>
-        <ul class="ymm__sidebar-list" data-role="nav" role="list"></ul>
-      </nav>
-    </aside>
-
-    <div class="ymm__main">
-      <div class="ymm__message" data-role="empty">
-        <h2 class="h4 ymm__message-title">
-          {{- section.settings.empty_heading | default: 'Select your vehicle' -}}
-        </h2>
-        <p class="ymm__message-text">
-          {{- section.settings.empty_text
-            | default: 'Use the vehicle selector on the home page to find parts compatible with your vehicle.'
-          -}}
-        </p>
-        <a class="button" href="{{ section.settings.change_vehicle_url | default: routes.root_url }}">
-          Choose your vehicle
-        </a>
-      </div>
-
-      <div class="ymm__error" data-role="error" hidden role="alert"></div>
-      <div data-role="results"></div>
-    </div>
-  </div>
-
-  {%- comment -%}
-    Card pool. Every candidate product for this collection is rendered once,
-    hidden, carrying the attributes the script filters and sorts on. The script
-    moves these <li> nodes into the per-category grids — it never re-creates
-    them, so a card in the grid is byte-for-byte the theme's product card.
-  {%- endcomment -%}
-  <ul class="ymm__pool" data-role="pool" hidden>
-    {%- for product in collection.products limit: product_limit -%}
-      {%- liquid
-        assign fitment_attr = ''
-        assign fitment_groups = product.metafields.custom.fitment_groups.value
-
-        if fitment_groups != blank
-          # Delimited on both ends so an indexOf('|key|') match cannot straddle
-          # two group keys or hit a prefix of a longer one.
-          assign fitment_attr = fitment_groups | join: '|'
-          assign fitment_attr = '|' | append: fitment_attr | append: '|'
-        endif
-      -%}
-      <li
-        class="product-grid__item"
-        data-product-id="{{ product.id }}"
-        data-type="{{ product.type | default: 'Other' | escape }}"
-        data-title="{{ product.title | escape }}"
-        data-price="{{ product.price }}"
-        data-fitment-groups="{{ fitment_attr | escape }}"
-      >
-        {% # theme-check-disable %}
-        {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
-        {% # theme-check-enable %}
-      </li>
-    {%- endfor -%}
-
-    {%- for product in universal_collection.products limit: product_limit -%}
-      <li
-        class="product-grid__item"
-        data-product-id="{{ product.id }}"
-        data-type="{{ product.type | default: 'Other' | escape }}"
-        data-title="{{ product.title | escape }}"
-        data-price="{{ product.price }}"
-        data-universal="true"
-      >
-        {% # theme-check-disable %}
-        {% content_for 'block', type: '_product-card', id: 'universal-card', closest.product: product %}
-        {% # theme-check-enable %}
-        <span class="ymm__universal-badge">Universal</span>
-      </li>
-    {%- endfor -%}
-  </ul>
+  {%- for product in universal_collection.products limit: product_limit -%}
+    <li
+      class="product-grid__item"
+      data-product-id="{{ product.id }}"
+      data-type="{{ product.type | default: 'Other' | escape }}"
+      data-title="{{ product.title | escape }}"
+      data-price="{{ product.price }}"
+      data-universal="true"
+    >
+      {% # theme-check-disable %}
+      {% content_for 'block', type: '_product-card', id: 'universal-card', closest.product: product %}
+      {% # theme-check-enable %}
+      <span class="ymm__universal-badge">Universal</span>
+    </li>
+  {%- endfor -%}
+</ul>
 </div>
 
 {% stylesheet %}
@@ -259,8 +197,9 @@
     color: rgb(var(--color-foreground-rgb) / var(--opacity-70));
     text-decoration: none;
     border-inline-start: 3px solid transparent;
-    transition: color var(--animation-speed) var(--animation-easing), background-color var(--animation-speed)
-      var(--animation-easing), border-color var(--animation-speed) var(--animation-easing);
+    transition: color var(--animation-speed) var(--animation-easing),
+      background-color var(--animation-speed) var(--animation-easing),
+      border-color var(--animation-speed) var(--animation-easing);
   }
 
   .ymm-results .ymm__sidebar-list a:hover {
