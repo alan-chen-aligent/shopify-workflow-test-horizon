@@ -181,7 +181,7 @@
       },
       "name": "YMM Fitment Results",
       "settings": {
-        "universal_collection": "universal-accessories",
+        "universal_collection": "universal",
         "change_vehicle_url": "",
         "empty_heading": "Select your vehicle",
         "empty_text": "Use the vehicle selector on the home page to find parts compatible with your vehicle.",
