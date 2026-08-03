@@ -30,6 +30,11 @@
 {% liquid
   # A "collection" setting resolves to the collection object itself.
   assign universal_collection = section.settings.universal_collection
+
+  # Group heading is always an <h2> for document outline; the setting only
+  # picks the visual size, via Horizon's .h2–.h6 utility classes.
+  assign heading_class = section.settings.heading_size | default: 'h5'
+  assign show_count = section.settings.show_group_count
 %}
 
 {% capture product_card_size %}
@@ -120,74 +125,117 @@
       {%- endif -%}
     </div>
   {%- else -%}
-    {%- for product_type in product_types -%}
-      {%- liquid
-        # Compared explicitly rather than with the `where` filter, because a
-        # product with no product type has type == '' and `where` treats a blank
-        # value as a truthiness test — those products would be counted in the
-        # total but never rendered in a group.
-        assign group_count = 0
+    {%- assign tabs_html = '' -%}
 
-        for product in collection.products
-          if product.type == product_type
-            assign group_count = group_count | plus: 1
-          endif
-        endfor
+    {%- comment -%}
+      Groups are captured rather than emitted directly so the tab strip can be
+      rendered above them. `assign` still executes inside a capture — only the
+      output is diverted — so the tabs accumulate during the same pass that
+      counts the products, instead of counting everything a second time.
+    {%- endcomment -%}
+    {%- capture groups_html -%}
+      {%- for product_type in product_types -%}
+        {%- liquid
+          # Compared explicitly rather than with the `where` filter, because a
+          # product with no product type has type == '' and `where` treats a blank
+          # value as a truthiness test — those products would be counted in the
+          # total but never rendered in a group.
+          assign group_count = 0
 
-        for product in universal_products
-          if product.type == product_type
-            unless vehicle_ids contains product.id
+          for product in collection.products
+            if product.type == product_type
               assign group_count = group_count | plus: 1
-            endunless
-          endif
-        endfor
-      -%}
+            endif
+          endfor
 
-      {%- if group_count > 0 -%}
-        <div class="ymm__category">
-          <h2 class="h5 ymm__category-heading">
-            {{ product_type | default: 'Other' }}
-            <span class="ymm__category-count">({{ group_count }})</span>
-          </h2>
+          for product in universal_products
+            if product.type == product_type
+              unless vehicle_ids contains product.id
+                assign group_count = group_count | plus: 1
+              endunless
+            endif
+          endfor
 
-          <ul
-            class="product-grid product-grid--grid"
-            role="list"
-            style="--mobile-columns: 2;"
-          >
-            {%- for product in collection.products -%}
-              {%- if product.type == product_type -%}
-                <li class="product-grid__item" data-product-id="{{ product.id }}">
-                  {% # theme-check-disable %}
-                  {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
-                  {% # theme-check-enable %}
-                </li>
+          assign type_label = product_type | default: 'Other'
+          assign type_anchor = type_label | handleize | prepend: 'ymm-'
+        -%}
+
+        {%- if group_count > 0 -%}
+          {%- capture tab -%}
+            <a class="ymm__tab" href="#{{ type_anchor }}" data-tab="{{ type_anchor }}">
+              {{- type_label -}}
+              {%- if show_count %}<span class="ymm__tab-count">{{ group_count }}</span>{% endif -%}
+            </a>
+          {%- endcapture -%}
+          {%- assign tabs_html = tabs_html | append: tab -%}
+
+          <div class="ymm__category" id="{{ type_anchor }}">
+            <h2 class="{{ heading_class }} ymm__category-heading">
+              {{ type_label }}
+              {%- if show_count %}
+                <span class="ymm__category-count">({{ group_count }})</span>
               {%- endif -%}
-            {%- endfor -%}
+            </h2>
 
-            {%- comment -%} Universal trails the exact matches within the group. {%- endcomment -%}
-            {%- for product in universal_products -%}
-              {%- if product.type == product_type -%}
-                {%- unless vehicle_ids contains product.id -%}
+            <ul
+              class="product-grid product-grid--grid"
+              role="list"
+              style="--mobile-columns: 2;"
+            >
+              {%- for product in collection.products -%}
+                {%- if product.type == product_type -%}
                   <li class="product-grid__item" data-product-id="{{ product.id }}">
-                    {%- comment -%}
-                      Same static block id as the vehicle-specific loop above,
-                      so both share one "Product card" entry in the theme
-                      editor. A second id would render a second, near-identical
-                      config that only ever styled universal accessories.
-                    {%- endcomment -%}
                     {% # theme-check-disable %}
                     {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
                     {% # theme-check-enable %}
-                    <span class="ymm__universal-badge">Universal</span>
                   </li>
-                {%- endunless -%}
-              {%- endif -%}
-            {%- endfor -%}
-          </ul>
-        </div>
-      {%- endif -%}
-    {%- endfor -%}
+                {%- endif -%}
+              {%- endfor -%}
+
+              {%- comment -%} Universal trails the exact matches within the group. {%- endcomment -%}
+              {%- for product in universal_products -%}
+                {%- if product.type == product_type -%}
+                  {%- unless vehicle_ids contains product.id -%}
+                    <li class="product-grid__item" data-product-id="{{ product.id }}">
+                      {%- comment -%}
+                        Same static block id as the vehicle-specific loop above,
+                        so both share one "Product card" entry in the theme
+                        editor. A second id would render a second, near-identical
+                        config that only ever styled universal accessories.
+                      {%- endcomment -%}
+                      {% # theme-check-disable %}
+                      {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
+                      {% # theme-check-enable %}
+                      {%- comment -%}
+                        Carries the theme's own badge classes so that once the
+                        script moves it into the card's .product-badges stack it
+                        picks up the radius, font and padding configured on the
+                        product image block. Rendered here rather than hidden,
+                        so it still reads as a badge if the move never happens.
+                      {%- endcomment -%}
+                      <span
+                        class="product-badges__badge product-badges__badge--rectangle ymm__universal-badge"
+                        data-universal-badge
+                      >
+                        {{- section.settings.universal_badge_label | default: 'Universal' -}}
+                      </span>
+                    </li>
+                  {%- endunless -%}
+                {%- endif -%}
+              {%- endfor -%}
+            </ul>
+          </div>
+        {%- endif -%}
+      {%- endfor -%}
+    {%- endcapture -%}
+
+    {%- if section.settings.show_tabs and tabs_html != blank -%}
+      <nav class="ymm__tabs" data-role="tabs" aria-label="Product categories">
+        {{ tabs_html }}
+      </nav>
+    {%- endif -%}
+
+    {{ groups_html }}
   {%- endif -%}
 </div>
 
@@ -218,8 +266,56 @@
     color: var(--color-foreground-muted);
   }
 
+  .ymm-results .ymm__tabs {
+    position: sticky;
+    top: var(--header-height, 0px);
+    z-index: 2;
+    display: flex;
+    gap: var(--padding-sm);
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+    margin-block-end: var(--padding-lg);
+    background-color: var(--color-background);
+    border-block-end: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-10));
+  }
+
+  .ymm-results .ymm__tabs::-webkit-scrollbar {
+    display: none;
+  }
+
+  .ymm-results .ymm__tab {
+    flex: none;
+    padding-block: var(--padding-xs);
+    white-space: nowrap;
+    text-decoration: none;
+    font-size: var(--font-paragraph--size);
+    color: var(--color-foreground-muted);
+    border-block-end: 2px solid transparent;
+    transition: color var(--animation-speed) var(--animation-easing),
+      border-color var(--animation-speed) var(--animation-easing);
+  }
+
+  .ymm-results .ymm__tab:hover {
+    color: var(--color-foreground);
+  }
+
+  .ymm-results .ymm__tab[aria-current='true'] {
+    color: var(--color-foreground);
+    font-weight: 600;
+    border-block-end-color: currentcolor;
+  }
+
+  .ymm-results .ymm__tab-count {
+    margin-inline-start: var(--padding-3xs);
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
+    font-weight: 400;
+  }
+
   .ymm-results .ymm__category {
     margin-block-end: var(--padding-3xl);
+    /* Clears the sticky header and tab strip when jumped to via an anchor. */
+    scroll-margin-top: calc(var(--header-height, 0px) + var(--ymm-tabs-height, 0px) + var(--padding-sm));
   }
 
   .ymm-results .ymm__category-heading {
@@ -238,19 +334,121 @@
     color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
   }
 
+  /* Sits under the sale / sold-out badge once moved into .product-badges.
+     width is constrained because .product-badges__badge is display:flex, which
+     would otherwise stretch the badge across the card in the pre-move state. */
   .ymm-results .ymm__universal-badge {
-    display: inline-block;
+    width: fit-content;
     margin-block-start: var(--padding-3xs);
-    padding: 2px 8px;
-    border: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-15));
-    border-radius: 999px;
-    font-size: 0.6875rem;
-    font-weight: 600;
-    letter-spacing: 0.06em;
-    text-transform: uppercase;
-    color: var(--color-foreground-muted);
   }
 {% endstylesheet %}
+
+{%- comment -%}
+  Presentation only. The tabs are rendered server-side and work as plain anchor
+  links with no JS — this just adds the selected state and keeps the sticky
+  strip from covering the heading it jumps to.
+{%- endcomment -%}
+<script>
+  (function () {
+    var root = document.querySelector('.ymm-results--{{ section.id }}');
+    if (!root) return;
+
+    /**
+     * The theme renders its sale / sold-out badge into an absolutely positioned
+     * .product-badges stack inside the card image, and stacks its children as
+     * plain blocks. Moving ours in there is what puts it on the image, directly
+     * beneath the sale badge, with no coordinates of our own to keep in sync.
+     *
+     * Runs before the tabs guard below, which returns early when tabs are off.
+     */
+    Array.prototype.slice.call(root.querySelectorAll('[data-universal-badge]')).forEach(function (badge) {
+      var card = badge.closest('.product-grid__item');
+      var stack = card && card.querySelector('.product-badges');
+      if (stack) stack.appendChild(badge);
+    });
+
+    var tabsEl = root.querySelector('[data-role="tabs"]');
+    if (!tabsEl) return;
+
+    var tabs = Array.prototype.slice.call(tabsEl.querySelectorAll('.ymm__tab'));
+    var groups = tabs
+      .map(function (tab) {
+        return document.getElementById(tab.dataset.tab);
+      })
+      .filter(Boolean);
+    if (!groups.length) return;
+
+    /**
+     * The strip is sticky, so it covers whatever scrolls under it. Publishing
+     * its height lets scroll-margin-top clear it on an anchor jump, and gives
+     * the spy the same threshold the browser scrolls to.
+     */
+    function publishHeight() {
+      root.style.setProperty('--ymm-tabs-height', tabsEl.offsetHeight + 'px');
+    }
+
+    function headerHeight() {
+      var raw = getComputedStyle(document.documentElement).getPropertyValue('--header-height');
+      return parseFloat(raw) || 0;
+    }
+
+    function setActive(id) {
+      tabs.forEach(function (tab) {
+        if (tab.dataset.tab === id) tab.setAttribute('aria-current', 'true');
+        else tab.removeAttribute('aria-current');
+      });
+    }
+
+    /** The last group whose top has passed under the sticky strip wins. */
+    function sync() {
+      var threshold = headerHeight() + tabsEl.offsetHeight + 4;
+      var active = groups[0];
+
+      groups.forEach(function (group) {
+        if (group.getBoundingClientRect().top <= threshold) active = group;
+      });
+
+      // A short last group may never reach the threshold, which would leave the
+      // spy stuck on the second to last tab at the bottom of the page.
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2) {
+        active = groups[groups.length - 1];
+      }
+
+      setActive(active.id);
+    }
+
+    var ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(function () {
+        sync();
+        ticking = false;
+      });
+    }
+
+    tabs.forEach(function (tab) {
+      // Reflect the click straight away — smooth scrolling would otherwise
+      // leave the previous tab highlighted for the whole animation.
+      tab.addEventListener('click', function () {
+        setActive(tab.dataset.tab);
+      });
+    });
+
+    window.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener(
+      'resize',
+      function () {
+        publishHeight();
+        onScroll();
+      },
+      { passive: true }
+    );
+
+    publishHeight();
+    sync();
+  })();
+</script>
 
 {% schema %}
 {
@@ -285,6 +483,43 @@
       "id": "empty_text",
       "label": "Empty state text",
       "default": "We couldn't find parts matching this vehicle."
+    },
+    {
+      "type": "text",
+      "id": "universal_badge_label",
+      "label": "Universal badge label",
+      "default": "Universal"
+    },
+    {
+      "type": "header",
+      "content": "Groups"
+    },
+    {
+      "type": "select",
+      "id": "heading_size",
+      "label": "Group heading size",
+      "info": "Visual size only — the heading stays an h2 for accessibility.",
+      "options": [
+        { "value": "h2", "label": "Extra large" },
+        { "value": "h3", "label": "Large" },
+        { "value": "h4", "label": "Medium" },
+        { "value": "h5", "label": "Small" },
+        { "value": "h6", "label": "Extra small" }
+      ],
+      "default": "h5"
+    },
+    {
+      "type": "checkbox",
+      "id": "show_group_count",
+      "label": "Show product count",
+      "default": true
+    },
+    {
+      "type": "checkbox",
+      "id": "show_tabs",
+      "label": "Show category tabs",
+      "info": "A sticky row of links that jump to each group and highlight the one in view.",
+      "default": true
     },
     {
       "type": "header",
