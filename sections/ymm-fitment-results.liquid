@@ -1,10 +1,15 @@
 {% comment %}
   YMM Fitment Results — sections/ymm-fitment-results.liquid
 
-  Renders on a vehicle collection page. Reads the collection handle plus the
-  ?year= / ?body= URL params written by the vehicle selector
-  (sections/vehicle-search.liquid), resolves the fitment group, and lists the
-  matching products grouped by product type.
+  Renders on a vehicle collection page. The collection handle has already
+  scoped the page to one make and model; the ?body= / ?year= / ?series= params
+  written by the vehicle selector (sections/vehicle-search.liquid) narrow it
+  further against each product's custom.fitment_groups metafield. Results are
+  grouped by product type.
+
+  When no product in the collection carries fitment_groups, the narrowing is
+  skipped and the whole collection is listed — the collection alone is already
+  a correct answer for the vehicle, so an empty page would be strictly worse.
 
   Products are rendered server-side, as the theme's own product card
   (blocks/_product-card.liquid), into a hidden pool. The script then filters the
@@ -38,6 +43,20 @@
     }
   }
 {% endstyle %}
+
+<div class="section-background color-{{ section.settings.color_scheme }}"></div>
+<div
+  class="
+    section
+    {% if section.settings.product_grid_width == 'centered' %}section--page-width{% else %}section--full-width{% endif %}
+    color-{{ section.settings.color_scheme }}
+    ymm-results ymm-results--{{ section.id }}
+    spacing-style
+  "
+  style="{% render 'spacing-style', settings: section.settings %}"
+>
+  <p class="ymm__status" data-role="status"></p>
+  <div data-role="results"></div>
 
 {%- comment -%}
   Card pool. Every candidate product for this collection is rendered once,
@@ -338,89 +357,72 @@
     var root = document.querySelector('.ymm-results--{{ section.id }}');
     if (!root) return;
 
-    var vd = window.VEHICLE_DATA;
     var cats = window.CATEGORY_ORDER || [];
-    var handle = root.dataset.collectionHandle;
-
-    var toolbarEl = root.querySelector('[data-role="toolbar"]');
     var statusEl = root.querySelector('[data-role="status"]');
-    var sortEl = root.querySelector('[data-role="sort"]');
-    var sidebarEl = root.querySelector('[data-role="sidebar"]');
-    var navEl = root.querySelector('[data-role="nav"]');
-    var emptyEl = root.querySelector('[data-role="empty"]');
-    var errorEl = root.querySelector('[data-role="error"]');
     var resultsEl = root.querySelector('[data-role="results"]');
     var poolEl = root.querySelector('[data-role="pool"]');
 
-    var st = { year: '', make: '', model: '', body: '', groupKey: null };
-
-    // Every card rendered by Liquid, in server order — that order *is* the
-    // "Featured" sort. Captured once, because the nodes get moved out of the
-    // pool and into the category grids on every render.
+    // Every card rendered by Liquid, in server order. Captured once, because
+    // the nodes get moved out of the pool and into the category grids.
     var allItems = Array.prototype.slice.call(poolEl.children);
-    var spyOff = null;
+
+    var params = new URLSearchParams(window.location.search);
+    var qBody = (params.get('body') || '').trim();
+    var qYear = (params.get('year') || '').trim();
+    var qSeries = (params.get('series') || '').trim();
 
     function anchorFor(category) {
       return 'ymm-cat-' + category.replace(/[^a-zA-Z0-9]/g, '');
     }
 
-    function fail(message) {
-      errorEl.textContent = message;
-      errorEl.hidden = false;
-    }
-
-    // ── Vehicle resolution ─────────────────────────────────────────
-    // Unchanged from the Storefront-API version: the fitment group still comes
-    // from VEHICLE_DATA, only the product rendering moved to Liquid.
-
-    /** Reverse the collection handle back to a make/model. */
-    function makeModelFromHandle(h) {
-      var map = vd.collectionHandles;
-      for (var key in map) {
-        if (map[key] === h) {
-          var parts = key.split('_');
-          return { make: parts[0], model: parts.slice(1).join('_') };
-        }
-      }
-      return null;
+    /**
+     * Narrowing by body/year is only applied when the products actually carry
+     * fitment data. The collection handle has already scoped this page to one
+     * make and model, so with no fitment metafield the whole collection is the
+     * correct answer — showing nothing would be worse than showing everything.
+     */
+    function hasFitmentData() {
+      return allItems.some(function (item) {
+        return (item.dataset.fitmentGroups || '') !== '';
+      });
     }
 
     /**
-     * Resolve the fitment group from year+make+model, using body when it helps.
-     * Body is optional: all bodies for a given year map to the same group.
+     * A product fits when one of its fitment group keys matches the requested
+     * vehicle. Keys are stored '|a|b|c|' delimited, so a substring test cannot
+     * straddle two keys or match a prefix of a longer one.
      */
-    function resolveGroup(year, make, model, body) {
-      if (body) {
-        var k = year + '_' + make + '_' + model + '_' + body;
-        if (vd.groupLookup[k]) return vd.groupLookup[k];
-      }
-      var bodies = vd.bodiesByMakeModel[make + '_' + model] || [];
-      for (var i = 0; i < bodies.length; i++) {
-        var kk = year + '_' + make + '_' + model + '_' + bodies[i];
-        if (vd.groupLookup[kk]) return vd.groupLookup[kk];
-      }
-      return null;
-    }
-
-    // ── Filter / sort / group ──────────────────────────────────────
-
-    /** Universal products fit everything; the rest must carry the group key. */
     function fitsVehicle(item) {
       if (item.dataset.universal === 'true') return true;
-      return (item.dataset.fitmentGroups || '').indexOf('|' + st.groupKey + '|') !== -1;
+
+      var groups = item.dataset.fitmentGroups || '';
+      if (groups === '') return false;
+
+      return keyCandidates().some(function (key) {
+        return groups.indexOf('|' + key + '|') !== -1;
+      });
     }
 
-    function sortItems(items) {
-      var key = sortEl.value;
-      if (key === 'default') return items;
+    /**
+     * The fitment group key format is owned by the app that writes the
+     * metafield, so this builds the combinations the selector's params can
+     * describe and accepts any of them.
+     */
+    function keyCandidates() {
+      var keys = [];
+      if (qYear && qBody) keys.push(qYear + '_' + qBody);
+      if (qYear && qSeries) keys.push(qYear + '_' + qSeries);
+      if (qYear) keys.push(qYear);
+      if (qSeries) keys.push(qSeries);
+      return keys;
+    }
 
-      return items.slice().sort(function (a, b) {
-        if (key === 'price_asc') return Number(a.dataset.price) - Number(b.dataset.price);
-        if (key === 'price_desc') return Number(b.dataset.price) - Number(a.dataset.price);
-        if (key === 'title_asc') return a.dataset.title.localeCompare(b.dataset.title);
-        if (key === 'title_desc') return b.dataset.title.localeCompare(a.dataset.title);
-        return 0;
-      });
+    function describeVehicle() {
+      var parts = [];
+      if (qYear) parts.push(qYear);
+      if (qBody) parts.push(qBody);
+      if (qSeries) parts.push('(' + qSeries + ')');
+      return parts.join(' ');
     }
 
     /** Categories in CATEGORY_ORDER first, then whatever else turned up. */
@@ -446,8 +448,6 @@
       });
       return groups;
     }
-
-    // ── Render ─────────────────────────────────────────────────────
 
     /** Builds one Horizon product grid per category and moves the cards in. */
     function buildGrid(group) {
@@ -479,7 +479,8 @@
     }
 
     function render() {
-      var matching = allItems.filter(fitsVehicle);
+      var narrowing = hasFitmentData() && keyCandidates().length > 0;
+      var matching = narrowing ? allItems.filter(fitsVehicle) : allItems.slice();
 
       // The universal collection can overlap the vehicle collection. First
       // occurrence wins, which is the vehicle-specific one.
@@ -491,161 +492,26 @@
         return true;
       });
 
+      var vehicle = describeVehicle();
       statusEl.textContent =
-        st.year +
-        ' ' +
-        st.make +
-        ' ' +
-        st.model +
-        (st.body ? ' ' + st.body : '') +
-        ' — ' +
-        matching.length +
-        (matching.length === 1 ? ' product' : ' products');
-      toolbarEl.hidden = false;
+        matching.length + (matching.length === 1 ? ' product' : ' products') + (vehicle ? ' for ' + vehicle : '');
 
-      // Park every card back in the pool so a re-render (sort change) starts
-      // from a known state and never orphans a node.
-      allItems.forEach(function (item) {
-        poolEl.appendChild(item);
-      });
       resultsEl.textContent = '';
 
       if (matching.length === 0) {
-        sidebarEl.hidden = true;
-        var none = document.createElement('div');
-        none.className = 'ymm__message';
-        var title = document.createElement('h2');
-        title.className = 'h4 ymm__message-title';
-        title.textContent = 'No products found';
-        var text = document.createElement('p');
-        text.className = 'ymm__message-text';
-        text.textContent = "We couldn't find products for this vehicle.";
-        none.appendChild(title);
-        none.appendChild(text);
+        var none = document.createElement('p');
+        none.className = 'ymm__message-text';
+        none.textContent = "We couldn't find products for this vehicle.";
         resultsEl.appendChild(none);
         return;
       }
 
-      var groups = groupByCategory(sortItems(matching));
-
-      navEl.textContent = '';
-      groups.forEach(function (group) {
-        var li = document.createElement('li');
-        var link = document.createElement('a');
-        link.href = '#' + anchorFor(group.name);
-        link.dataset.anchor = anchorFor(group.name);
-        link.appendChild(document.createTextNode(group.name));
-
-        var count = document.createElement('span');
-        count.className = 'ymm__sidebar-count';
-        count.textContent = group.items.length;
-        link.appendChild(count);
-
-        li.appendChild(link);
-        navEl.appendChild(li);
-      });
-      sidebarEl.hidden = false;
-
-      groups.forEach(function (group) {
+      groupByCategory(matching).forEach(function (group) {
         resultsEl.appendChild(buildGrid(group));
       });
-
-      bindScrollSpy(groups);
     }
 
-    // ── Sidebar scroll spy ─────────────────────────────────────────
-    function headerOffset() {
-      var raw = getComputedStyle(document.documentElement).getPropertyValue('--header-height');
-      return parseInt(raw, 10) || 60;
-    }
-
-    function bindScrollSpy(groups) {
-      if (spyOff) {
-        spyOff();
-        spyOff = null;
-      }
-
-      var links = Array.prototype.slice.call(navEl.querySelectorAll('a[data-anchor]'));
-
-      links.forEach(function (link) {
-        link.addEventListener('click', function (event) {
-          event.preventDefault();
-          var target = document.getElementById(link.dataset.anchor);
-          if (!target) return;
-          var top = target.getBoundingClientRect().top + window.scrollY - headerOffset() - 16;
-          window.scrollTo({ top: top, behavior: 'smooth' });
-        });
-      });
-
-      var handler = function () {
-        var offset = headerOffset() + 32;
-        var active = null;
-        groups.forEach(function (group) {
-          var section = document.getElementById(anchorFor(group.name));
-          if (section && section.getBoundingClientRect().top <= offset) active = anchorFor(group.name);
-        });
-        links.forEach(function (link) {
-          if (link.dataset.anchor === active) link.setAttribute('aria-current', 'true');
-          else link.removeAttribute('aria-current');
-        });
-      };
-
-      window.addEventListener('scroll', handler, { passive: true });
-      handler();
-      spyOff = function () {
-        window.removeEventListener('scroll', handler);
-      };
-    }
-
-    sortEl.addEventListener('change', function () {
-      if (st.groupKey) render();
-    });
-
-    // ── Init: resolve vehicle from handle + URL, then render ───────
-    function init() {
-      if (!vd) {
-        fail('Vehicle data is unavailable, so parts cannot be matched to this vehicle.');
-        return;
-      }
-
-      var mm = makeModelFromHandle(handle);
-      if (!mm) return; // not a recognised vehicle collection — leave empty state
-
-      var params = new URLSearchParams(window.location.search);
-      var pYear = params.get('year');
-      var pBody = params.get('body');
-
-      // The selector writes a year range ("2015-2019"); parseInt takes its
-      // start year, which is what VEHICLE_DATA is keyed on.
-      var year = pYear && vd.years.indexOf(parseInt(pYear, 10)) !== -1 ? String(parseInt(pYear, 10)) : null;
-      if (!year) return; // no valid year → keep the empty state prompting for a selection
-
-      // Validate body against this make/model, case-insensitively.
-      var body = null;
-      if (pBody) {
-        var bodies = vd.bodiesByMakeModel[mm.make + '_' + mm.model] || [];
-        for (var i = 0; i < bodies.length; i++) {
-          if (bodies[i].toLowerCase() === pBody.toLowerCase()) {
-            body = bodies[i];
-            break;
-          }
-        }
-      }
-
-      var groupKey = resolveGroup(year, mm.make, mm.model, body);
-      if (!groupKey) return; // no fitment group for this combo
-
-      st.year = year;
-      st.make = mm.make;
-      st.model = mm.model;
-      st.body = body || '';
-      st.groupKey = groupKey;
-
-      emptyEl.hidden = true;
-      render();
-    }
-
-    init();
+    render();
   })();
 </script>
 
