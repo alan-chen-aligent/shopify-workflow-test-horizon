@@ -538,20 +538,26 @@
       findEl.disabled = !collectionHandle();
     }
 
+    /**
+     * Shopify storefront filter params, not params of our own — Shopify applies
+     * them server-side, so the collection page renders already narrowed.
+     *
+     * Both metafields must be enabled as filters in the Search & Discovery app.
+     * If they are not, Shopify silently ignores the params and returns the
+     * whole collection, which looks like the filter "not working".
+     */
+    var YEAR_FILTER = 'filter.p.m.custom.vehicle_year_range_simple';
+    var BODY_FILTER = 'filter.p.m.custom.vehicle_body';
+
     findEl.addEventListener('click', function () {
       var handle = collectionHandle();
       if (!handle) return;
 
       var params = new URLSearchParams();
-      if (bodyEl.value) params.set('body', bodyEl.value);
+      if (bodyEl.value) params.set(BODY_FILTER, bodyEl.value);
 
-      // A year option identifies one vehicle, so the series comes with it — and
-      // it is the only thing separating two series that share a year range.
       var choice = yearEl.value === '' ? null : yearChoices[Number(yearEl.value)];
-      if (choice) {
-        params.set('year', choice.year);
-        if (choice.vehicle.variant) params.set('series', choice.vehicle.variant);
-      }
+      if (choice) params.set(YEAR_FILTER, choice.year);
 
       var query = params.toString();
       window.location.href = COLLECTIONS_URL + '/' + handle + (query ? '?' + query : '');

@@ -1,28 +1,35 @@
 {% comment %}
   YMM Fitment Results — sections/ymm-fitment-results.liquid
 
-  Renders on a vehicle collection page. The collection handle has already
-  scoped the page to one make and model; the ?body= / ?year= / ?series= params
-  written by the vehicle selector (sections/vehicle-search.liquid) narrow it
-  further against each product's custom.fitment_groups metafield. Results are
-  grouped by product type.
+  Renders on a vehicle collection page. The collection handle scopes the page
+  to one make and model; body and year come in as Shopify's own storefront
+  filters, written by the vehicle selector (sections/vehicle-search.liquid):
 
-  When no product in the collection carries fitment_groups, the narrowing is
-  skipped and the whole collection is listed — the collection alone is already
-  a correct answer for the vehicle, so an empty page would be strictly worse.
+    /collections/toyota-4runner
+      ?filter.p.m.custom.vehicle_year_range_simple=1984-1989
+      &filter.p.m.custom.vehicle_body=SUV
 
-  Products are rendered server-side, as the theme's own product card
-  (blocks/_product-card.liquid), into a hidden pool. The script then filters the
-  pool by the resolved fitment group and moves the cards into one Horizon
-  product grid per category. Rendering in Liquid is the whole point: the cards
-  get quick add, swatches, price formatting and view transitions from the theme
-  for free, instead of a second card implementation drifting in JS.
+  Because those are native filters, `collection.products` is already narrowed
+  by Shopify before this template runs — there is no client-side filtering, no
+  Storefront API call and no JavaScript here at all. Both filters must be
+  enabled in the Search & Discovery app for the params to take effect;
+  otherwise Shopify ignores them and the full collection renders.
+
+  Products are grouped by product type and rendered with the theme's own
+  product card (blocks/_product-card.liquid), so they match the rest of Horizon.
+  Universal accessories are merged into the same groups, trailing the exact
+  matches, rather than listed apart.
+
+  Not paginated, deliberately: merging the two sources means a paginated
+  collection.products would repeat every universal product on every page.
+  Liquid therefore caps collection.products at 50, which a fitment-filtered
+  collection is not expected to exceed. A paginate tag would lift the cap but
+  reintroduce the duplication.
 {% endcomment %}
 
 {% liquid
   # A "collection" setting resolves to the collection object itself.
   assign universal_collection = section.settings.universal_collection
-  assign product_limit = section.settings.product_limit
 %}
 
 {% capture product_card_size %}
@@ -32,7 +39,6 @@
 
 {% style %}
   .ymm-results--{{ section.id }} {
-    --ymm-sidebar-width: 22rem;
     --product-grid-gap-mobile: {{ section.settings.columns_gap_vertical | at_most: 12 }}px {{ section.settings.columns_gap_horizontal | at_most: 12 }}px;
     --product-grid-gap-desktop: {{ section.settings.columns_gap_vertical }}px {{ section.settings.columns_gap_horizontal }}px;
   }
@@ -55,194 +61,135 @@
   "
   style="{% render 'spacing-style', settings: section.settings %}"
 >
-  <p class="ymm__status" data-role="status"></p>
-  <div data-role="results"></div>
+  {%- liquid
+    # Universal accessories fit every vehicle, so they carry no year or body
+    # metafield — which means Shopify's filters exclude them from
+    # collection.products. They are pulled from their own collection and merged
+    # into whichever product type they belong to, after the exact matches.
+    if universal_collection != blank
+      assign universal_products = universal_collection.products
+    else
+      assign universal_products = '' | split: ','
+    endif
 
-{%- comment -%}
-  Card pool. Every candidate product for this collection is rendered once,
-  hidden, carrying the attributes the script filters and sorts on. The script
-  moves these <li> nodes into the per-category grids — it never re-creates
-  them, so a card in the grid is byte-for-byte the theme's product card.
-{%- endcomment -%}
-<ul class="ymm__pool" data-role="pool" hidden>
-  {%- for product in collection.products limit: product_limit -%}
-    {%- liquid
-      assign fitment_attr = ''
-      assign fitment_groups = product.metafields.custom.fitment_groups.value
+    assign vehicle_ids = collection.products | map: 'id'
 
-      if fitment_groups != blank
-        # Delimited on both ends so an indexOf('|key|') match cannot straddle
-        # two group keys or hit a prefix of a longer one.
-        assign fitment_attr = fitment_groups | join: '|'
-        assign fitment_attr = '|' | append: fitment_attr | append: '|'
-      endif
-    -%}
-    <li
-      class="product-grid__item"
-      data-product-id="{{ product.id }}"
-      data-type="{{ product.type | default: 'Other' | escape }}"
-      data-title="{{ product.title | escape }}"
-      data-price="{{ product.price }}"
-      data-fitment-groups="{{ fitment_attr | escape }}"
-    >
-      {% # theme-check-disable %}
-      {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
-      {% # theme-check-enable %}
-    </li>
-  {%- endfor -%}
+    # Union of both sides, so a type only universal products use still gets a
+    # group, and the collection's own sort order drives the group order.
+    assign vehicle_types = collection.products | map: 'type'
+    assign universal_types = universal_products | map: 'type'
+    assign product_types = vehicle_types | concat: universal_types | uniq
 
-  {%- for product in universal_collection.products limit: product_limit -%}
-    <li
-      class="product-grid__item"
-      data-product-id="{{ product.id }}"
-      data-type="{{ product.type | default: 'Other' | escape }}"
-      data-title="{{ product.title | escape }}"
-      data-price="{{ product.price }}"
-      data-universal="true"
-    >
-      {% # theme-check-disable %}
-      {% content_for 'block', type: '_product-card', id: 'universal-card', closest.product: product %}
-      {% # theme-check-enable %}
-      <span class="ymm__universal-badge">Universal</span>
-    </li>
-  {%- endfor -%}
-</ul>
+    # A universal product may also sit in the vehicle collection and survive the
+    # filter. Count it once, and render it once, as the vehicle-specific match.
+    assign universal_extra = 0
+    for product in universal_products
+      unless vehicle_ids contains product.id
+        assign universal_extra = universal_extra | plus: 1
+      endunless
+    endfor
+    assign total_count = collection.products.size | plus: universal_extra
+
+    # The status line describes the vehicle from the filters Shopify applied.
+    # Liquid cannot read arbitrary query params, but it can read active filters.
+    assign vehicle = ''
+    for filter in collection.filters
+      for value in filter.active_values
+        assign vehicle = vehicle | append: value.label | append: ' '
+      endfor
+    endfor
+    assign vehicle = vehicle | strip
+  -%}
+
+  <p class="ymm__status">
+    {{- total_count }}
+    {% if total_count == 1 %}product{% else %}products{% endif %}
+    {%- if vehicle != blank %} for {{ vehicle }}{% endif -%}
+  </p>
+
+  {%- if total_count == 0 -%}
+    <div class="ymm__message">
+      <h2 class="h4 ymm__message-title">
+        {{- section.settings.empty_heading | default: 'No products found' -}}
+      </h2>
+      <p class="ymm__message-text">
+        {{- section.settings.empty_text | default: "We couldn't find parts matching this vehicle." -}}
+      </p>
+      {%- if section.settings.change_vehicle_url != blank -%}
+        <a class="button" href="{{ section.settings.change_vehicle_url }}">Choose your vehicle</a>
+      {%- endif -%}
+    </div>
+  {%- else -%}
+    {%- for product_type in product_types -%}
+      {%- liquid
+        # Compared explicitly rather than with the `where` filter, because a
+        # product with no product type has type == '' and `where` treats a blank
+        # value as a truthiness test — those products would be counted in the
+        # total but never rendered in a group.
+        assign group_count = 0
+
+        for product in collection.products
+          if product.type == product_type
+            assign group_count = group_count | plus: 1
+          endif
+        endfor
+
+        for product in universal_products
+          if product.type == product_type
+            unless vehicle_ids contains product.id
+              assign group_count = group_count | plus: 1
+            endunless
+          endif
+        endfor
+      -%}
+
+      {%- if group_count > 0 -%}
+        <div class="ymm__category">
+          <h2 class="h5 ymm__category-heading">
+            {{ product_type | default: 'Other' }}
+            <span class="ymm__category-count">({{ group_count }})</span>
+          </h2>
+
+          <ul
+            class="product-grid product-grid--grid"
+            role="list"
+            style="--mobile-columns: 2;"
+          >
+            {%- for product in collection.products -%}
+              {%- if product.type == product_type -%}
+                <li class="product-grid__item" data-product-id="{{ product.id }}">
+                  {% # theme-check-disable %}
+                  {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
+                  {% # theme-check-enable %}
+                </li>
+              {%- endif -%}
+            {%- endfor -%}
+
+            {%- comment -%} Universal trails the exact matches within the group. {%- endcomment -%}
+            {%- for product in universal_products -%}
+              {%- if product.type == product_type -%}
+                {%- unless vehicle_ids contains product.id -%}
+                  <li class="product-grid__item" data-product-id="{{ product.id }}">
+                    {% # theme-check-disable %}
+                    {% content_for 'block', type: '_product-card', id: 'universal-card', closest.product: product %}
+                    {% # theme-check-enable %}
+                    <span class="ymm__universal-badge">Universal</span>
+                  </li>
+                {%- endunless -%}
+              {%- endif -%}
+            {%- endfor -%}
+          </ul>
+        </div>
+      {%- endif -%}
+    {%- endfor -%}
+  {%- endif -%}
 </div>
 
 {% stylesheet %}
-  .ymm-results .ymm__toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--padding-sm);
-    flex-wrap: wrap;
-    padding-block: var(--padding-sm);
-    border-block-end: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-10));
-  }
-
-  /* These blocks all set an explicit display, which outranks the UA rule for
-     [hidden]. Each one that the script toggles needs its own opt-out. */
-  .ymm-results .ymm__toolbar[hidden] {
-    display: none;
-  }
-
   .ymm-results .ymm__status {
-    margin: 0;
+    margin: 0 0 var(--padding-sm);
     font-size: var(--font-paragraph--size);
     color: var(--color-foreground-muted);
-  }
-
-  .ymm-results .ymm__toolbar-actions {
-    display: flex;
-    align-items: center;
-    gap: var(--padding-sm);
-  }
-
-  .ymm-results .ymm__change {
-    font-size: var(--font-paragraph--size);
-    color: var(--color-foreground-muted);
-    text-decoration: none;
-  }
-
-  .ymm-results .ymm__change:hover {
-    color: var(--color-foreground);
-    text-decoration: underline;
-  }
-
-  .ymm-results .ymm__sort-label {
-    font-size: var(--font-paragraph--size);
-    color: var(--color-foreground-muted);
-  }
-
-  .ymm-results .ymm__sort-select {
-    padding: var(--padding-2xs) var(--padding-xs);
-    border: 1px solid var(--color-input-border, rgb(var(--color-foreground-rgb) / var(--opacity-15)));
-    border-radius: var(--style-border-radius-inputs);
-    background-color: var(--color-background);
-    color: var(--color-foreground);
-    cursor: pointer;
-  }
-
-  .ymm-results .ymm__layout {
-    display: flex;
-    align-items: flex-start;
-    gap: var(--padding-xl);
-    padding-block-start: var(--padding-lg);
-  }
-
-  .ymm-results .ymm__sidebar {
-    inline-size: var(--ymm-sidebar-width);
-    flex-shrink: 0;
-    position: sticky;
-    top: calc(var(--header-height, 6rem) + var(--padding-sm));
-    align-self: flex-start;
-  }
-
-  .ymm-results .ymm__sidebar[hidden] {
-    display: none;
-  }
-
-  .ymm-results .ymm__sidebar-nav {
-    border: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-10));
-    border-radius: var(--style-border-radius-inputs);
-    overflow: hidden;
-  }
-
-  .ymm-results .ymm__sidebar-heading {
-    margin: 0;
-    padding: var(--padding-sm) var(--padding-sm) var(--padding-2xs);
-    font-size: 0.75rem;
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    text-transform: uppercase;
-    color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
-    border-block-end: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-5));
-  }
-
-  .ymm-results .ymm__sidebar-list {
-    list-style: none;
-    margin: 0;
-    padding-block: var(--padding-3xs);
-    padding-inline: 0;
-  }
-
-  .ymm-results .ymm__sidebar-list a {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: var(--padding-xs);
-    padding: var(--padding-xs) var(--padding-sm);
-    font-size: var(--font-paragraph--size);
-    color: rgb(var(--color-foreground-rgb) / var(--opacity-70));
-    text-decoration: none;
-    border-inline-start: 3px solid transparent;
-    transition: color var(--animation-speed) var(--animation-easing),
-      background-color var(--animation-speed) var(--animation-easing),
-      border-color var(--animation-speed) var(--animation-easing);
-  }
-
-  .ymm-results .ymm__sidebar-list a:hover {
-    color: var(--color-foreground);
-    background-color: rgb(var(--color-foreground-rgb) / var(--opacity-5));
-    border-inline-start-color: rgb(var(--color-foreground-rgb) / var(--opacity-25));
-  }
-
-  .ymm-results .ymm__sidebar-list a[aria-current='true'] {
-    color: var(--color-foreground);
-    font-weight: 600;
-    background-color: rgb(var(--color-foreground-rgb) / var(--opacity-5));
-    border-inline-start-color: var(--color-foreground);
-  }
-
-  .ymm-results .ymm__sidebar-count {
-    font-size: 0.75rem;
-    font-weight: 400;
-    color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
-  }
-
-  .ymm-results .ymm__main {
-    flex: 1;
-    min-inline-size: 0;
   }
 
   .ymm-results .ymm__message {
@@ -255,10 +202,6 @@
     padding-inline: var(--padding-sm);
   }
 
-  .ymm-results .ymm__message[hidden] {
-    display: none;
-  }
-
   .ymm-results .ymm__message-title {
     margin: 0;
   }
@@ -269,46 +212,8 @@
     color: var(--color-foreground-muted);
   }
 
-  .ymm-results .ymm__error {
-    padding: var(--padding-sm);
-    margin-block-end: var(--padding-sm);
-    border: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-15));
-    border-radius: var(--style-border-radius-inputs);
-    color: var(--color-foreground);
-  }
-
-  .ymm-results .ymm__error[hidden] {
-    display: none;
-  }
-
-  .ymm-results .ymm__loading {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: var(--padding-xs);
-    padding-block: var(--padding-3xl);
-    color: var(--color-foreground-muted);
-  }
-
-  .ymm-results .ymm__spinner {
-    inline-size: 1.25rem;
-    block-size: 1.25rem;
-    flex-shrink: 0;
-    border: 2px solid rgb(var(--color-foreground-rgb) / var(--opacity-15));
-    border-top-color: var(--color-foreground);
-    border-radius: 50%;
-    animation: ymm-spin 0.7s linear infinite;
-  }
-
-  @keyframes ymm-spin {
-    to {
-      transform: rotate(360deg);
-    }
-  }
-
   .ymm-results .ymm__category {
     margin-block-end: var(--padding-3xl);
-    scroll-margin-top: calc(var(--header-height, 6rem) + var(--padding-sm));
   }
 
   .ymm-results .ymm__category-heading {
@@ -327,11 +232,6 @@
     color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
   }
 
-  /* The pool only ever holds cards that are not currently on screen. */
-  .ymm-results .ymm__pool[hidden] {
-    display: none;
-  }
-
   .ymm-results .ymm__universal-badge {
     display: inline-block;
     margin-block-start: var(--padding-3xs);
@@ -344,176 +244,7 @@
     text-transform: uppercase;
     color: var(--color-foreground-muted);
   }
-
-  @media screen and (max-width: 989px) {
-    .ymm-results .ymm__sidebar {
-      display: none !important;
-    }
-  }
 {% endstylesheet %}
-
-<script>
-  (function () {
-    var root = document.querySelector('.ymm-results--{{ section.id }}');
-    if (!root) return;
-
-    var cats = window.CATEGORY_ORDER || [];
-    var statusEl = root.querySelector('[data-role="status"]');
-    var resultsEl = root.querySelector('[data-role="results"]');
-    var poolEl = root.querySelector('[data-role="pool"]');
-
-    // Every card rendered by Liquid, in server order. Captured once, because
-    // the nodes get moved out of the pool and into the category grids.
-    var allItems = Array.prototype.slice.call(poolEl.children);
-
-    var params = new URLSearchParams(window.location.search);
-    var qBody = (params.get('body') || '').trim();
-    var qYear = (params.get('year') || '').trim();
-    var qSeries = (params.get('series') || '').trim();
-
-    function anchorFor(category) {
-      return 'ymm-cat-' + category.replace(/[^a-zA-Z0-9]/g, '');
-    }
-
-    /**
-     * Narrowing by body/year is only applied when the products actually carry
-     * fitment data. The collection handle has already scoped this page to one
-     * make and model, so with no fitment metafield the whole collection is the
-     * correct answer — showing nothing would be worse than showing everything.
-     */
-    function hasFitmentData() {
-      return allItems.some(function (item) {
-        return (item.dataset.fitmentGroups || '') !== '';
-      });
-    }
-
-    /**
-     * A product fits when one of its fitment group keys matches the requested
-     * vehicle. Keys are stored '|a|b|c|' delimited, so a substring test cannot
-     * straddle two keys or match a prefix of a longer one.
-     */
-    function fitsVehicle(item) {
-      if (item.dataset.universal === 'true') return true;
-
-      var groups = item.dataset.fitmentGroups || '';
-      if (groups === '') return false;
-
-      return keyCandidates().some(function (key) {
-        return groups.indexOf('|' + key + '|') !== -1;
-      });
-    }
-
-    /**
-     * The fitment group key format is owned by the app that writes the
-     * metafield, so this builds the combinations the selector's params can
-     * describe and accepts any of them.
-     */
-    function keyCandidates() {
-      var keys = [];
-      if (qYear && qBody) keys.push(qYear + '_' + qBody);
-      if (qYear && qSeries) keys.push(qYear + '_' + qSeries);
-      if (qYear) keys.push(qYear);
-      if (qSeries) keys.push(qSeries);
-      return keys;
-    }
-
-    function describeVehicle() {
-      var parts = [];
-      if (qYear) parts.push(qYear);
-      if (qBody) parts.push(qBody);
-      if (qSeries) parts.push('(' + qSeries + ')');
-      return parts.join(' ');
-    }
-
-    /** Categories in CATEGORY_ORDER first, then whatever else turned up. */
-    function groupByCategory(items) {
-      var map = {};
-      var order = [];
-
-      items.forEach(function (item) {
-        var category = item.dataset.type || 'Other';
-        if (!map[category]) {
-          map[category] = [];
-          order.push(category);
-        }
-        map[category].push(item);
-      });
-
-      var groups = [];
-      cats.forEach(function (category) {
-        if (map[category]) groups.push({ name: category, items: map[category] });
-      });
-      order.forEach(function (category) {
-        if (cats.indexOf(category) === -1) groups.push({ name: category, items: map[category] });
-      });
-      return groups;
-    }
-
-    /** Builds one Horizon product grid per category and moves the cards in. */
-    function buildGrid(group) {
-      var section = document.createElement('div');
-      section.className = 'ymm__category';
-      section.id = anchorFor(group.name);
-
-      var heading = document.createElement('h2');
-      heading.className = 'h5 ymm__category-heading';
-      heading.appendChild(document.createTextNode(group.name));
-
-      var count = document.createElement('span');
-      count.className = 'ymm__category-count';
-      count.textContent = '(' + group.items.length + ')';
-      heading.appendChild(count);
-
-      var grid = document.createElement('ul');
-      grid.className = 'product-grid product-grid--grid';
-      grid.setAttribute('role', 'list');
-      grid.style.setProperty('--mobile-columns', '2');
-
-      group.items.forEach(function (item) {
-        grid.appendChild(item);
-      });
-
-      section.appendChild(heading);
-      section.appendChild(grid);
-      return section;
-    }
-
-    function render() {
-      var narrowing = hasFitmentData() && keyCandidates().length > 0;
-      var matching = narrowing ? allItems.filter(fitsVehicle) : allItems.slice();
-
-      // The universal collection can overlap the vehicle collection. First
-      // occurrence wins, which is the vehicle-specific one.
-      var seen = {};
-      matching = matching.filter(function (item) {
-        var id = item.dataset.productId;
-        if (seen[id]) return false;
-        seen[id] = true;
-        return true;
-      });
-
-      var vehicle = describeVehicle();
-      statusEl.textContent =
-        matching.length + (matching.length === 1 ? ' product' : ' products') + (vehicle ? ' for ' + vehicle : '');
-
-      resultsEl.textContent = '';
-
-      if (matching.length === 0) {
-        var none = document.createElement('p');
-        none.className = 'ymm__message-text';
-        none.textContent = "We couldn't find products for this vehicle.";
-        resultsEl.appendChild(none);
-        return;
-      }
-
-      groupByCategory(matching).forEach(function (group) {
-        resultsEl.appendChild(buildGrid(group));
-      });
-    }
-
-    render();
-  })();
-</script>
 
 {% schema %}
 {
@@ -523,20 +254,14 @@
   },
   "settings": [
     {
+      "type": "paragraph",
+      "content": "Body and year are applied with Shopify's storefront filters. Both metafields must be enabled as filters in the Search & Discovery app, or the URL params are ignored."
+    },
+    {
       "type": "collection",
       "id": "universal_collection",
       "label": "Universal accessories collection",
-      "info": "Every product in this collection is shown for every vehicle."
-    },
-    {
-      "type": "range",
-      "id": "product_limit",
-      "label": "Products rendered per collection",
-      "min": 20,
-      "max": 100,
-      "step": 10,
-      "default": 50,
-      "info": "Cards are rendered up front and filtered in the browser. Higher values cover more fitments but make the page heavier."
+      "info": "Merged into each product type group, after the vehicle-specific matches. These products carry no year or body metafield, so Shopify's filters would otherwise exclude them."
     },
     {
       "type": "url",
@@ -547,13 +272,13 @@
       "type": "text",
       "id": "empty_heading",
       "label": "Empty state heading",
-      "default": "Select your vehicle"
+      "default": "No products found"
     },
     {
       "type": "textarea",
       "id": "empty_text",
       "label": "Empty state text",
-      "default": "Use the vehicle selector on the home page to find parts compatible with your vehicle."
+      "default": "We couldn't find parts matching this vehicle."
     },
     {
       "type": "header",
