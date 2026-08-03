@@ -90,6 +90,15 @@
         "padding-block-end": 72
       }
     },
+    "vehicle_search_eWLbjz": {
+      "type": "vehicle-search",
+      "name": "Vehicle search",
+      "settings": {
+        "heading": "Find parts for your vehicle",
+        "endpoint": "/apps/vehicle-search/vehicles.json",
+        "padding_block": 40
+      }
+    },
     "product_list_fa6P9H": {
       "type": "product-list",
       "blocks": {
@@ -934,22 +943,13 @@
         "padding-block-start": 48,
         "padding-block-end": 48
       }
-    },
-    "vehicle_search_eWLbjz": {
-      "type": "vehicle-search",
-      "name": "Vehicle search",
-      "settings": {
-        "heading": "Find parts for your vehicle",
-        "endpoint": "/apps/vehicle-search/vehicles.json",
-        "padding_block": 40
-      }
     }
   },
   "order": [
     "hero_jVaWmY",
+    "vehicle_search_eWLbjz",
     "product_list_fa6P9H",
     "collection_list_dMhec7",
-    "section_kXXb4Y",
-    "vehicle_search_eWLbjz"
+    "section_kXXb4Y"
   ]
 }
