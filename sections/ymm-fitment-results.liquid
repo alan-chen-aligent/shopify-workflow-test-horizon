@@ -170,8 +170,14 @@
               {%- if product.type == product_type -%}
                 {%- unless vehicle_ids contains product.id -%}
                   <li class="product-grid__item" data-product-id="{{ product.id }}">
+                    {%- comment -%}
+                      Same static block id as the vehicle-specific loop above,
+                      so both share one "Product card" entry in the theme
+                      editor. A second id would render a second, near-identical
+                      config that only ever styled universal accessories.
+                    {%- endcomment -%}
                     {% # theme-check-disable %}
-                    {% content_for 'block', type: '_product-card', id: 'universal-card', closest.product: product %}
+                    {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
                     {% # theme-check-enable %}
                     <span class="ymm__universal-badge">Universal</span>
                   </li>
