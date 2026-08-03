@@ -18,6 +18,7 @@
   class="vehicle-search"
   id="vehicle-search-{{ section.id }}"
   data-endpoint="{{ section.settings.endpoint }}"
+  data-collections-url="{{ routes.collections_url }}"
 >
   {%- if section.settings.heading != blank -%}
     <h2 class="vehicle-search__heading">{{ section.settings.heading }}</h2>
@@ -53,6 +54,12 @@
         <option value="">Select a body first</option>
       </select>
     </div>
+  </div>
+
+  <div class="vehicle-search__actions">
+    <button type="button" class="vehicle-search__submit" data-role="find" disabled>
+      {{- section.settings.button_label | default: 'Find parts' -}}
+    </button>
   </div>
 
   <div class="vehicle-search__result" data-role="result" hidden></div>
@@ -99,6 +106,24 @@
   #vehicle-search-{{ section.id }} .vehicle-search__status[data-tone="error"] {
     color: #b3261e;
   }
+  #vehicle-search-{{ section.id }} .vehicle-search__actions {
+    margin-top: 1rem;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__submit {
+    padding: 0.7rem 1.5rem;
+    border: 1px solid transparent;
+    border-radius: 6px;
+    background: #111;
+    color: #fff;
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+  }
+  #vehicle-search-{{ section.id }} .vehicle-search__submit:disabled {
+    background: rgba(0, 0, 0, 0.08);
+    color: rgba(0, 0, 0, 0.45);
+    cursor: not-allowed;
+  }
   #vehicle-search-{{ section.id }} .vehicle-search__result {
     margin-top: 1.5rem;
     padding: 1rem;
@@ -118,6 +143,8 @@
     if (!root) return;
 
     var ENDPOINT = root.dataset.endpoint || '/apps/vehicle-search/vehicles.json';
+    // routes.collections_url, so the link keeps any locale/market prefix.
+    var COLLECTIONS_URL = root.dataset.collectionsUrl || '/collections';
 
     var makeEl = root.querySelector('[data-role="make"]');
     var modelEl = root.querySelector('[data-role="model"]');
@@ -125,6 +152,7 @@
     var yearEl = root.querySelector('[data-role="year"]');
     var statusEl = root.querySelector('[data-role="status"]');
     var resultEl = root.querySelector('[data-role="result"]');
+    var findEl = root.querySelector('[data-role="find"]');
 
     // slug -> { name, models: { model: [bodies] } }, from the index. Covers the
     // Model and Body selects with no network request.
@@ -328,6 +356,7 @@
       reset(bodyEl, 'Select a model first');
       resetYear('Select a body first');
       hideResult();
+      refreshFind();
 
       if (!slug || !skeleton[slug]) {
         reset(modelEl, 'Select a make first');
@@ -353,6 +382,7 @@
     modelEl.addEventListener('change', function () {
       resetYear('Select a body first');
       hideResult();
+      refreshFind();
 
       var slug = makeEl.value;
       if (!modelEl.value || !skeleton[slug]) {
@@ -477,6 +507,56 @@
       );
     });
 
+    /**
+     * Mirrors how Shopify derives a handle from a title: strip accents,
+     * lowercase, and collapse every run of non-alphanumerics into one hyphen.
+     * "Corolla" -> "corolla", "3 Series" -> "3-series", "C-Class" -> "c-class".
+     */
+    function slugify(value) {
+      return String(value == null ? '' : value)
+        .normalize('NFD')
+        .replace(/[^\x00-\x7f]/g, '')
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/^-+|-+$/g, '');
+    }
+
+    /**
+     * Make + Model are the whole handle — /collections/toyota-corolla. Body and
+     * year narrow the fitment within that collection, so they travel as query
+     * params rather than as separate collections.
+     *
+     * Returns null until both are chosen, which is what gates the button.
+     */
+    function collectionHandle() {
+      if (!makeEl.value || !modelEl.value) return null;
+      // makeEl.value is already the proxy's slug; slugify is idempotent on it.
+      return slugify(makeEl.value + '-' + modelEl.value);
+    }
+
+    function refreshFind() {
+      findEl.disabled = !collectionHandle();
+    }
+
+    findEl.addEventListener('click', function () {
+      var handle = collectionHandle();
+      if (!handle) return;
+
+      var params = new URLSearchParams();
+      if (bodyEl.value) params.set('body', bodyEl.value);
+
+      // A year option identifies one vehicle, so the series comes with it — and
+      // it is the only thing separating two series that share a year range.
+      var choice = yearEl.value === '' ? null : yearChoices[Number(yearEl.value)];
+      if (choice) {
+        params.set('year', choice.year);
+        if (choice.vehicle.variant) params.set('series', choice.vehicle.variant);
+      }
+
+      var query = params.toString();
+      window.location.href = COLLECTIONS_URL + '/' + handle + (query ? '?' + query : '');
+    });
+
     /** First 4-digit year in a value, or -1 if there isn't one. */
     function leadingYear(value) {
       var match = String(value).match(/\d{4}/);
@@ -504,6 +584,12 @@
       "id": "heading",
       "label": "Heading",
       "default": "Find parts for your vehicle"
+    },
+    {
+      "type": "text",
+      "id": "button_label",
+      "label": "Button label",
+      "default": "Find parts"
     },
     {
       "type": "text",

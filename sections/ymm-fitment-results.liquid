@@ -1,0 +1,832 @@
+{% comment %}
+  YMM Fitment Results — sections/ymm-fitment-results.liquid
+
+  Renders on a vehicle collection page. Reads the collection handle plus the
+  ?year= / ?body= URL params written by the vehicle selector
+  (sections/vehicle-search.liquid), resolves the fitment group, and lists the
+  matching products grouped by product type.
+
+  Products are rendered server-side, as the theme's own product card
+  (blocks/_product-card.liquid), into a hidden pool. The script then filters the
+  pool by the resolved fitment group and moves the cards into one Horizon
+  product grid per category. Rendering in Liquid is the whole point: the cards
+  get quick add, swatches, price formatting and view transitions from the theme
+  for free, instead of a second card implementation drifting in JS.
+{% endcomment %}
+
+{% render 'ymm-data' %}
+
+{% liquid
+  # A "collection" setting resolves to the collection object itself.
+  assign universal_collection = section.settings.universal_collection
+  assign product_limit = section.settings.product_limit
+%}
+
+{% capture product_card_size %}
+  {% render 'util-product-grid-card-size', section: section %}
+{% endcapture %}
+{% assign product_card_size = product_card_size | strip %}
+
+{% style %}
+  .ymm-results--{{ section.id }} {
+    --ymm-sidebar-width: 22rem;
+    --product-grid-gap-mobile: {{ section.settings.columns_gap_vertical | at_most: 12 }}px {{ section.settings.columns_gap_horizontal | at_most: 12 }}px;
+    --product-grid-gap-desktop: {{ section.settings.columns_gap_vertical }}px {{ section.settings.columns_gap_horizontal }}px;
+  }
+
+  @media screen and (min-width: 750px) {
+    .ymm-results--{{ section.id }} .product-grid {
+      --product-grid-columns-desktop: repeat(auto-fill, minmax({{ product_card_size }}, 1fr));
+    }
+  }
+{% endstyle %}
+
+<div class="section-background color-{{ section.settings.color_scheme }}"></div>
+<div
+  class="
+    section
+    {% if section.settings.product_grid_width == 'centered' %}section--page-width{% else %}section--full-width{% endif %}
+    color-{{ section.settings.color_scheme }}
+    ymm-results ymm-results--{{ section.id }}
+    spacing-style
+  "
+  style="{% render 'spacing-style', settings: section.settings %}"
+  data-collection-handle="{{ collection.handle }}"
+  data-change-vehicle-url="{{ section.settings.change_vehicle_url | default: routes.root_url }}"
+>
+  <div class="ymm__toolbar" data-role="toolbar" hidden>
+    <p class="ymm__status" data-role="status"></p>
+
+    <div class="ymm__toolbar-actions">
+      <a class="ymm__change link" href="{{ section.settings.change_vehicle_url | default: routes.root_url }}">
+        &larr; Change vehicle
+      </a>
+
+      <label class="ymm__sort-label" for="ymm-sort-{{ section.id }}">Sort by</label>
+      <select id="ymm-sort-{{ section.id }}" class="ymm__sort-select" data-role="sort">
+        <option value="default">Featured</option>
+        <option value="price_asc">Price: Low to High</option>
+        <option value="price_desc">Price: High to Low</option>
+        <option value="title_asc">A–Z</option>
+        <option value="title_desc">Z–A</option>
+      </select>
+    </div>
+  </div>
+
+  <div class="ymm__layout">
+    <aside class="ymm__sidebar" data-role="sidebar" hidden aria-label="Product categories">
+      <nav class="ymm__sidebar-nav">
+        <p class="ymm__sidebar-heading">Browse</p>
+        <ul class="ymm__sidebar-list" data-role="nav" role="list"></ul>
+      </nav>
+    </aside>
+
+    <div class="ymm__main">
+      <div class="ymm__message" data-role="empty">
+        <h2 class="h4 ymm__message-title">
+          {{- section.settings.empty_heading | default: 'Select your vehicle' -}}
+        </h2>
+        <p class="ymm__message-text">
+          {{- section.settings.empty_text
+            | default: 'Use the vehicle selector on the home page to find parts compatible with your vehicle.'
+          -}}
+        </p>
+        <a class="button" href="{{ section.settings.change_vehicle_url | default: routes.root_url }}">
+          Choose your vehicle
+        </a>
+      </div>
+
+      <div class="ymm__error" data-role="error" hidden role="alert"></div>
+      <div data-role="results"></div>
+    </div>
+  </div>
+
+  {%- comment -%}
+    Card pool. Every candidate product for this collection is rendered once,
+    hidden, carrying the attributes the script filters and sorts on. The script
+    moves these <li> nodes into the per-category grids — it never re-creates
+    them, so a card in the grid is byte-for-byte the theme's product card.
+  {%- endcomment -%}
+  <ul class="ymm__pool" data-role="pool" hidden>
+    {%- for product in collection.products limit: product_limit -%}
+      {%- liquid
+        assign fitment_attr = ''
+        assign fitment_groups = product.metafields.custom.fitment_groups.value
+
+        if fitment_groups != blank
+          # Delimited on both ends so an indexOf('|key|') match cannot straddle
+          # two group keys or hit a prefix of a longer one.
+          assign fitment_attr = fitment_groups | join: '|'
+          assign fitment_attr = '|' | append: fitment_attr | append: '|'
+        endif
+      -%}
+      <li
+        class="product-grid__item"
+        data-product-id="{{ product.id }}"
+        data-type="{{ product.type | default: 'Other' | escape }}"
+        data-title="{{ product.title | escape }}"
+        data-price="{{ product.price }}"
+        data-fitment-groups="{{ fitment_attr | escape }}"
+      >
+        {% # theme-check-disable %}
+        {% content_for 'block', type: '_product-card', id: 'product-card', closest.product: product %}
+        {% # theme-check-enable %}
+      </li>
+    {%- endfor -%}
+
+    {%- for product in universal_collection.products limit: product_limit -%}
+      <li
+        class="product-grid__item"
+        data-product-id="{{ product.id }}"
+        data-type="{{ product.type | default: 'Other' | escape }}"
+        data-title="{{ product.title | escape }}"
+        data-price="{{ product.price }}"
+        data-universal="true"
+      >
+        {% # theme-check-disable %}
+        {% content_for 'block', type: '_product-card', id: 'universal-card', closest.product: product %}
+        {% # theme-check-enable %}
+        <span class="ymm__universal-badge">Universal</span>
+      </li>
+    {%- endfor -%}
+  </ul>
+</div>
+
+{% stylesheet %}
+  .ymm-results .ymm__toolbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--padding-sm);
+    flex-wrap: wrap;
+    padding-block: var(--padding-sm);
+    border-block-end: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-10));
+  }
+
+  /* These blocks all set an explicit display, which outranks the UA rule for
+     [hidden]. Each one that the script toggles needs its own opt-out. */
+  .ymm-results .ymm__toolbar[hidden] {
+    display: none;
+  }
+
+  .ymm-results .ymm__status {
+    margin: 0;
+    font-size: var(--font-paragraph--size);
+    color: var(--color-foreground-muted);
+  }
+
+  .ymm-results .ymm__toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--padding-sm);
+  }
+
+  .ymm-results .ymm__change {
+    font-size: var(--font-paragraph--size);
+    color: var(--color-foreground-muted);
+    text-decoration: none;
+  }
+
+  .ymm-results .ymm__change:hover {
+    color: var(--color-foreground);
+    text-decoration: underline;
+  }
+
+  .ymm-results .ymm__sort-label {
+    font-size: var(--font-paragraph--size);
+    color: var(--color-foreground-muted);
+  }
+
+  .ymm-results .ymm__sort-select {
+    padding: var(--padding-2xs) var(--padding-xs);
+    border: 1px solid var(--color-input-border, rgb(var(--color-foreground-rgb) / var(--opacity-15)));
+    border-radius: var(--style-border-radius-inputs);
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    cursor: pointer;
+  }
+
+  .ymm-results .ymm__layout {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--padding-xl);
+    padding-block-start: var(--padding-lg);
+  }
+
+  .ymm-results .ymm__sidebar {
+    inline-size: var(--ymm-sidebar-width);
+    flex-shrink: 0;
+    position: sticky;
+    top: calc(var(--header-height, 6rem) + var(--padding-sm));
+    align-self: flex-start;
+  }
+
+  .ymm-results .ymm__sidebar[hidden] {
+    display: none;
+  }
+
+  .ymm-results .ymm__sidebar-nav {
+    border: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-10));
+    border-radius: var(--style-border-radius-inputs);
+    overflow: hidden;
+  }
+
+  .ymm-results .ymm__sidebar-heading {
+    margin: 0;
+    padding: var(--padding-sm) var(--padding-sm) var(--padding-2xs);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
+    border-block-end: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-5));
+  }
+
+  .ymm-results .ymm__sidebar-list {
+    list-style: none;
+    margin: 0;
+    padding-block: var(--padding-3xs);
+    padding-inline: 0;
+  }
+
+  .ymm-results .ymm__sidebar-list a {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--padding-xs);
+    padding: var(--padding-xs) var(--padding-sm);
+    font-size: var(--font-paragraph--size);
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-70));
+    text-decoration: none;
+    border-inline-start: 3px solid transparent;
+    transition: color var(--animation-speed) var(--animation-easing), background-color var(--animation-speed)
+      var(--animation-easing), border-color var(--animation-speed) var(--animation-easing);
+  }
+
+  .ymm-results .ymm__sidebar-list a:hover {
+    color: var(--color-foreground);
+    background-color: rgb(var(--color-foreground-rgb) / var(--opacity-5));
+    border-inline-start-color: rgb(var(--color-foreground-rgb) / var(--opacity-25));
+  }
+
+  .ymm-results .ymm__sidebar-list a[aria-current='true'] {
+    color: var(--color-foreground);
+    font-weight: 600;
+    background-color: rgb(var(--color-foreground-rgb) / var(--opacity-5));
+    border-inline-start-color: var(--color-foreground);
+  }
+
+  .ymm-results .ymm__sidebar-count {
+    font-size: 0.75rem;
+    font-weight: 400;
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
+  }
+
+  .ymm-results .ymm__main {
+    flex: 1;
+    min-inline-size: 0;
+  }
+
+  .ymm-results .ymm__message {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--padding-sm);
+    text-align: center;
+    padding-block: var(--padding-3xl);
+    padding-inline: var(--padding-sm);
+  }
+
+  .ymm-results .ymm__message[hidden] {
+    display: none;
+  }
+
+  .ymm-results .ymm__message-title {
+    margin: 0;
+  }
+
+  .ymm-results .ymm__message-text {
+    margin: 0;
+    max-inline-size: 40ch;
+    color: var(--color-foreground-muted);
+  }
+
+  .ymm-results .ymm__error {
+    padding: var(--padding-sm);
+    margin-block-end: var(--padding-sm);
+    border: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-15));
+    border-radius: var(--style-border-radius-inputs);
+    color: var(--color-foreground);
+  }
+
+  .ymm-results .ymm__error[hidden] {
+    display: none;
+  }
+
+  .ymm-results .ymm__loading {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--padding-xs);
+    padding-block: var(--padding-3xl);
+    color: var(--color-foreground-muted);
+  }
+
+  .ymm-results .ymm__spinner {
+    inline-size: 1.25rem;
+    block-size: 1.25rem;
+    flex-shrink: 0;
+    border: 2px solid rgb(var(--color-foreground-rgb) / var(--opacity-15));
+    border-top-color: var(--color-foreground);
+    border-radius: 50%;
+    animation: ymm-spin 0.7s linear infinite;
+  }
+
+  @keyframes ymm-spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+
+  .ymm-results .ymm__category {
+    margin-block-end: var(--padding-3xl);
+    scroll-margin-top: calc(var(--header-height, 6rem) + var(--padding-sm));
+  }
+
+  .ymm-results .ymm__category-heading {
+    display: flex;
+    align-items: baseline;
+    gap: var(--padding-2xs);
+    margin-block: 0 var(--padding-sm);
+    padding-block-end: var(--padding-2xs);
+    border-block-end: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-10));
+  }
+
+  .ymm-results .ymm__category-count {
+    font-size: var(--font-paragraph--size);
+    font-weight: 400;
+    font-family: var(--font-paragraph--family);
+    color: rgb(var(--color-foreground-rgb) / var(--opacity-40));
+  }
+
+  /* The pool only ever holds cards that are not currently on screen. */
+  .ymm-results .ymm__pool[hidden] {
+    display: none;
+  }
+
+  .ymm-results .ymm__universal-badge {
+    display: inline-block;
+    margin-block-start: var(--padding-3xs);
+    padding: 2px 8px;
+    border: 1px solid rgb(var(--color-foreground-rgb) / var(--opacity-15));
+    border-radius: 999px;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--color-foreground-muted);
+  }
+
+  @media screen and (max-width: 989px) {
+    .ymm-results .ymm__sidebar {
+      display: none !important;
+    }
+  }
+{% endstylesheet %}
+
+<script>
+  (function () {
+    var root = document.querySelector('.ymm-results--{{ section.id }}');
+    if (!root) return;
+
+    var vd = window.VEHICLE_DATA;
+    var cats = window.CATEGORY_ORDER || [];
+    var handle = root.dataset.collectionHandle;
+
+    var toolbarEl = root.querySelector('[data-role="toolbar"]');
+    var statusEl = root.querySelector('[data-role="status"]');
+    var sortEl = root.querySelector('[data-role="sort"]');
+    var sidebarEl = root.querySelector('[data-role="sidebar"]');
+    var navEl = root.querySelector('[data-role="nav"]');
+    var emptyEl = root.querySelector('[data-role="empty"]');
+    var errorEl = root.querySelector('[data-role="error"]');
+    var resultsEl = root.querySelector('[data-role="results"]');
+    var poolEl = root.querySelector('[data-role="pool"]');
+
+    var st = { year: '', make: '', model: '', body: '', groupKey: null };
+
+    // Every card rendered by Liquid, in server order — that order *is* the
+    // "Featured" sort. Captured once, because the nodes get moved out of the
+    // pool and into the category grids on every render.
+    var allItems = Array.prototype.slice.call(poolEl.children);
+    var spyOff = null;
+
+    function anchorFor(category) {
+      return 'ymm-cat-' + category.replace(/[^a-zA-Z0-9]/g, '');
+    }
+
+    function fail(message) {
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+    }
+
+    // ── Vehicle resolution ─────────────────────────────────────────
+    // Unchanged from the Storefront-API version: the fitment group still comes
+    // from VEHICLE_DATA, only the product rendering moved to Liquid.
+
+    /** Reverse the collection handle back to a make/model. */
+    function makeModelFromHandle(h) {
+      var map = vd.collectionHandles;
+      for (var key in map) {
+        if (map[key] === h) {
+          var parts = key.split('_');
+          return { make: parts[0], model: parts.slice(1).join('_') };
+        }
+      }
+      return null;
+    }
+
+    /**
+     * Resolve the fitment group from year+make+model, using body when it helps.
+     * Body is optional: all bodies for a given year map to the same group.
+     */
+    function resolveGroup(year, make, model, body) {
+      if (body) {
+        var k = year + '_' + make + '_' + model + '_' + body;
+        if (vd.groupLookup[k]) return vd.groupLookup[k];
+      }
+      var bodies = vd.bodiesByMakeModel[make + '_' + model] || [];
+      for (var i = 0; i < bodies.length; i++) {
+        var kk = year + '_' + make + '_' + model + '_' + bodies[i];
+        if (vd.groupLookup[kk]) return vd.groupLookup[kk];
+      }
+      return null;
+    }
+
+    // ── Filter / sort / group ──────────────────────────────────────
+
+    /** Universal products fit everything; the rest must carry the group key. */
+    function fitsVehicle(item) {
+      if (item.dataset.universal === 'true') return true;
+      return (item.dataset.fitmentGroups || '').indexOf('|' + st.groupKey + '|') !== -1;
+    }
+
+    function sortItems(items) {
+      var key = sortEl.value;
+      if (key === 'default') return items;
+
+      return items.slice().sort(function (a, b) {
+        if (key === 'price_asc') return Number(a.dataset.price) - Number(b.dataset.price);
+        if (key === 'price_desc') return Number(b.dataset.price) - Number(a.dataset.price);
+        if (key === 'title_asc') return a.dataset.title.localeCompare(b.dataset.title);
+        if (key === 'title_desc') return b.dataset.title.localeCompare(a.dataset.title);
+        return 0;
+      });
+    }
+
+    /** Categories in CATEGORY_ORDER first, then whatever else turned up. */
+    function groupByCategory(items) {
+      var map = {};
+      var order = [];
+
+      items.forEach(function (item) {
+        var category = item.dataset.type || 'Other';
+        if (!map[category]) {
+          map[category] = [];
+          order.push(category);
+        }
+        map[category].push(item);
+      });
+
+      var groups = [];
+      cats.forEach(function (category) {
+        if (map[category]) groups.push({ name: category, items: map[category] });
+      });
+      order.forEach(function (category) {
+        if (cats.indexOf(category) === -1) groups.push({ name: category, items: map[category] });
+      });
+      return groups;
+    }
+
+    // ── Render ─────────────────────────────────────────────────────
+
+    /** Builds one Horizon product grid per category and moves the cards in. */
+    function buildGrid(group) {
+      var section = document.createElement('div');
+      section.className = 'ymm__category';
+      section.id = anchorFor(group.name);
+
+      var heading = document.createElement('h2');
+      heading.className = 'h5 ymm__category-heading';
+      heading.appendChild(document.createTextNode(group.name));
+
+      var count = document.createElement('span');
+      count.className = 'ymm__category-count';
+      count.textContent = '(' + group.items.length + ')';
+      heading.appendChild(count);
+
+      var grid = document.createElement('ul');
+      grid.className = 'product-grid product-grid--grid';
+      grid.setAttribute('role', 'list');
+      grid.style.setProperty('--mobile-columns', '2');
+
+      group.items.forEach(function (item) {
+        grid.appendChild(item);
+      });
+
+      section.appendChild(heading);
+      section.appendChild(grid);
+      return section;
+    }
+
+    function render() {
+      var matching = allItems.filter(fitsVehicle);
+
+      // The universal collection can overlap the vehicle collection. First
+      // occurrence wins, which is the vehicle-specific one.
+      var seen = {};
+      matching = matching.filter(function (item) {
+        var id = item.dataset.productId;
+        if (seen[id]) return false;
+        seen[id] = true;
+        return true;
+      });
+
+      statusEl.textContent =
+        st.year +
+        ' ' +
+        st.make +
+        ' ' +
+        st.model +
+        (st.body ? ' ' + st.body : '') +
+        ' — ' +
+        matching.length +
+        (matching.length === 1 ? ' product' : ' products');
+      toolbarEl.hidden = false;
+
+      // Park every card back in the pool so a re-render (sort change) starts
+      // from a known state and never orphans a node.
+      allItems.forEach(function (item) {
+        poolEl.appendChild(item);
+      });
+      resultsEl.textContent = '';
+
+      if (matching.length === 0) {
+        sidebarEl.hidden = true;
+        var none = document.createElement('div');
+        none.className = 'ymm__message';
+        var title = document.createElement('h2');
+        title.className = 'h4 ymm__message-title';
+        title.textContent = 'No products found';
+        var text = document.createElement('p');
+        text.className = 'ymm__message-text';
+        text.textContent = "We couldn't find products for this vehicle.";
+        none.appendChild(title);
+        none.appendChild(text);
+        resultsEl.appendChild(none);
+        return;
+      }
+
+      var groups = groupByCategory(sortItems(matching));
+
+      navEl.textContent = '';
+      groups.forEach(function (group) {
+        var li = document.createElement('li');
+        var link = document.createElement('a');
+        link.href = '#' + anchorFor(group.name);
+        link.dataset.anchor = anchorFor(group.name);
+        link.appendChild(document.createTextNode(group.name));
+
+        var count = document.createElement('span');
+        count.className = 'ymm__sidebar-count';
+        count.textContent = group.items.length;
+        link.appendChild(count);
+
+        li.appendChild(link);
+        navEl.appendChild(li);
+      });
+      sidebarEl.hidden = false;
+
+      groups.forEach(function (group) {
+        resultsEl.appendChild(buildGrid(group));
+      });
+
+      bindScrollSpy(groups);
+    }
+
+    // ── Sidebar scroll spy ─────────────────────────────────────────
+    function headerOffset() {
+      var raw = getComputedStyle(document.documentElement).getPropertyValue('--header-height');
+      return parseInt(raw, 10) || 60;
+    }
+
+    function bindScrollSpy(groups) {
+      if (spyOff) {
+        spyOff();
+        spyOff = null;
+      }
+
+      var links = Array.prototype.slice.call(navEl.querySelectorAll('a[data-anchor]'));
+
+      links.forEach(function (link) {
+        link.addEventListener('click', function (event) {
+          event.preventDefault();
+          var target = document.getElementById(link.dataset.anchor);
+          if (!target) return;
+          var top = target.getBoundingClientRect().top + window.scrollY - headerOffset() - 16;
+          window.scrollTo({ top: top, behavior: 'smooth' });
+        });
+      });
+
+      var handler = function () {
+        var offset = headerOffset() + 32;
+        var active = null;
+        groups.forEach(function (group) {
+          var section = document.getElementById(anchorFor(group.name));
+          if (section && section.getBoundingClientRect().top <= offset) active = anchorFor(group.name);
+        });
+        links.forEach(function (link) {
+          if (link.dataset.anchor === active) link.setAttribute('aria-current', 'true');
+          else link.removeAttribute('aria-current');
+        });
+      };
+
+      window.addEventListener('scroll', handler, { passive: true });
+      handler();
+      spyOff = function () {
+        window.removeEventListener('scroll', handler);
+      };
+    }
+
+    sortEl.addEventListener('change', function () {
+      if (st.groupKey) render();
+    });
+
+    // ── Init: resolve vehicle from handle + URL, then render ───────
+    function init() {
+      if (!vd) {
+        fail('Vehicle data is unavailable, so parts cannot be matched to this vehicle.');
+        return;
+      }
+
+      var mm = makeModelFromHandle(handle);
+      if (!mm) return; // not a recognised vehicle collection — leave empty state
+
+      var params = new URLSearchParams(window.location.search);
+      var pYear = params.get('year');
+      var pBody = params.get('body');
+
+      // The selector writes a year range ("2015-2019"); parseInt takes its
+      // start year, which is what VEHICLE_DATA is keyed on.
+      var year = pYear && vd.years.indexOf(parseInt(pYear, 10)) !== -1 ? String(parseInt(pYear, 10)) : null;
+      if (!year) return; // no valid year → keep the empty state prompting for a selection
+
+      // Validate body against this make/model, case-insensitively.
+      var body = null;
+      if (pBody) {
+        var bodies = vd.bodiesByMakeModel[mm.make + '_' + mm.model] || [];
+        for (var i = 0; i < bodies.length; i++) {
+          if (bodies[i].toLowerCase() === pBody.toLowerCase()) {
+            body = bodies[i];
+            break;
+          }
+        }
+      }
+
+      var groupKey = resolveGroup(year, mm.make, mm.model, body);
+      if (!groupKey) return; // no fitment group for this combo
+
+      st.year = year;
+      st.make = mm.make;
+      st.model = mm.model;
+      st.body = body || '';
+      st.groupKey = groupKey;
+
+      emptyEl.hidden = true;
+      render();
+    }
+
+    init();
+  })();
+</script>
+
+{% schema %}
+{
+  "name": "YMM Fitment Results",
+  "enabled_on": {
+    "templates": ["collection"]
+  },
+  "settings": [
+    {
+      "type": "collection",
+      "id": "universal_collection",
+      "label": "Universal accessories collection",
+      "info": "Every product in this collection is shown for every vehicle."
+    },
+    {
+      "type": "range",
+      "id": "product_limit",
+      "label": "Products rendered per collection",
+      "min": 12,
+      "max": 100,
+      "step": 4,
+      "default": 50,
+      "info": "Cards are rendered up front and filtered in the browser. Higher values cover more fitments but make the page heavier."
+    },
+    {
+      "type": "url",
+      "id": "change_vehicle_url",
+      "label": "Change vehicle link"
+    },
+    {
+      "type": "text",
+      "id": "empty_heading",
+      "label": "Empty state heading",
+      "default": "Select your vehicle"
+    },
+    {
+      "type": "textarea",
+      "id": "empty_text",
+      "label": "Empty state text",
+      "default": "Use the vehicle selector on the home page to find parts compatible with your vehicle."
+    },
+    {
+      "type": "header",
+      "content": "Product grid"
+    },
+    {
+      "type": "select",
+      "id": "product_card_size",
+      "label": "Card size",
+      "options": [
+        { "value": "small", "label": "Small" },
+        { "value": "medium", "label": "Medium" },
+        { "value": "large", "label": "Large" },
+        { "value": "extra-large", "label": "Extra large" }
+      ],
+      "default": "medium"
+    },
+    {
+      "type": "select",
+      "id": "product_grid_width",
+      "label": "Width",
+      "options": [
+        { "value": "centered", "label": "Page" },
+        { "value": "full-width", "label": "Full" }
+      ],
+      "default": "centered"
+    },
+    {
+      "type": "range",
+      "id": "columns_gap_horizontal",
+      "label": "Horizontal gap",
+      "min": 0,
+      "max": 50,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "range",
+      "id": "columns_gap_vertical",
+      "label": "Vertical gap",
+      "min": 0,
+      "max": 50,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "header",
+      "content": "Section layout"
+    },
+    {
+      "type": "color_scheme",
+      "id": "color_scheme",
+      "label": "Color scheme",
+      "default": "scheme-1"
+    },
+    {
+      "type": "range",
+      "id": "padding-block-start",
+      "label": "Top padding",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "unit": "px",
+      "default": 16
+    },
+    {
+      "type": "range",
+      "id": "padding-block-end",
+      "label": "Bottom padding",
+      "min": 0,
+      "max": 100,
+      "step": 1,
+      "unit": "px",
+      "default": 40
+    }
+  ],
+  "presets": [{ "name": "YMM Fitment Results" }]
+}
+{% endschema %}
