@@ -1,0 +1,173 @@
+{%- doc -%}
+  Defines window.YMMCache — a localStorage read-through cache for the vehicle
+  data the app proxy serves.
+
+  The data changes when someone publishes a dataset, which is rare, while the
+  requests are the two expensive things on the page: a ~1 KB index on every page
+  view and a ~21 KB tree per make. The app's own `max-age=300` covers a shopper
+  moving between pages inside five minutes; this covers the rest of the day.
+
+  Two kinds of entry:
+
+    ymm:cache:v1:index              the make/model/body index, unscoped
+    ymm:cache:v1:<scope>:make:<s>   one make's full tree, scoped
+
+  Scoped entries carry the dataset version in their key, so a fresh index can
+  never be paired with a tree from an older publish — the old key is simply no
+  longer looked up, and prune() collects it. Nothing here is authoritative: a
+  miss, a blocked store or a full quota all just cost a request.
+
+  localStorage, not sessionStorage: the point is the second visit, not the
+  second page. Every access is guarded — storage throws outright in Safari
+  private browsing and when a shopper blocks site data.
+
+  Render before any script that uses it. Safe to render more than once per page.
+
+  @example
+  {% render 'vehicle-cache' %}
+{%- enddoc -%}
+<script>
+  (function () {
+    if (window.YMMCache) return;
+
+    var PREFIX = 'ymm:cache:v1:';
+    var DAY = 86400000;
+
+    function storageKey(key, scope) {
+      return PREFIX + (scope ? scope + ':' : '') + key;
+    }
+
+    function getItem(name) {
+      try {
+        return window.localStorage.getItem(name);
+      } catch (error) {
+        return null;
+      }
+    }
+
+    function setItem(name, raw) {
+      try {
+        window.localStorage.setItem(name, raw);
+        return true;
+      } catch (error) {
+        return false;
+      }
+    }
+
+    function remove(name) {
+      try {
+        window.localStorage.removeItem(name);
+      } catch (error) {
+        /* Nothing to do — see getItem(). */
+      }
+    }
+
+    /** Our own keys only. The origin's other data is none of our business. */
+    function keys() {
+      var found = [];
+      try {
+        for (var index = 0; index < window.localStorage.length; index++) {
+          var name = window.localStorage.key(index);
+          if (name && name.indexOf(PREFIX) === 0) found.push(name);
+        }
+      } catch (error) {
+        /* Storage blocked outright — nothing to enumerate. */
+      }
+      return found;
+    }
+
+    function parse(raw) {
+      var entry;
+      try {
+        entry = JSON.parse(raw);
+      } catch (error) {
+        return null;
+      }
+      // A stamped time is what makes an entry expirable, so an entry without
+      // one is unusable rather than merely odd.
+      return entry && typeof entry.t === 'number' ? entry : null;
+    }
+
+    window.YMMCache = {
+      /**
+       * Milliseconds. Overwritten by the caller from a theme setting, so the
+       * window is a merchant decision rather than a constant in here. 0 turns
+       * the cache off in both directions — the switch to reach for when the
+       * endpoint itself is what you are debugging.
+       */
+      ttl: DAY,
+
+      /**
+       * The stored value, or null when absent, expired, corrupt or unreadable.
+       * Expiry is judged against the *current* ttl rather than the one in force
+       * when the entry was written, so shortening the setting takes effect at
+       * once instead of a day later.
+       */
+      read: function (key, scope) {
+        if (!window.YMMCache.ttl) return null;
+
+        var name = storageKey(key, scope);
+        var raw = getItem(name);
+        if (!raw) return null;
+
+        var entry = parse(raw);
+        if (!entry) {
+          remove(name);
+          return null;
+        }
+
+        if (Date.now() - entry.t > window.YMMCache.ttl) {
+          remove(name);
+          return null;
+        }
+
+        return entry.v;
+      },
+
+      /** Returns whether the value was actually stored. */
+      write: function (key, value, scope) {
+        if (!window.YMMCache.ttl) return false;
+
+        var name = storageKey(key, scope);
+        var raw = JSON.stringify({ t: Date.now(), n: scope || '', v: value });
+
+        if (setItem(name, raw)) return true;
+
+        // Out of room. The quota is shared across the origin, so the pressure
+        // is as likely to be someone else's data as ours — drop what we know is
+        // dead and try once more before giving up.
+        window.YMMCache.prune(scope);
+        return setItem(name, raw);
+      },
+
+      /**
+       * Clears what can no longer be used: expired entries, unparseable ones,
+       * and — when a scope is given — entries left behind by an earlier dataset.
+       * Those are unreachable by then, since the scope is part of the key, so
+       * they would otherwise sit there until they timed out.
+       *
+       * With ttl at 0 this empties the cache, which is what makes turning the
+       * setting off actually free the space.
+       */
+      prune: function (scope) {
+        var ttl = window.YMMCache.ttl;
+
+        keys().forEach(function (name) {
+          if (!ttl) return remove(name);
+
+          var raw = getItem(name);
+          if (!raw) return;
+
+          var entry = parse(raw);
+          if (!entry) return remove(name);
+          if (Date.now() - entry.t > ttl) return remove(name);
+          if (scope && entry.n && entry.n !== scope) remove(name);
+        });
+      },
+
+      clear: function () {
+        keys().forEach(remove);
+      },
+    };
+  })();
+</script>

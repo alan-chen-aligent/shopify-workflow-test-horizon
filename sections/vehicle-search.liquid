@@ -10,18 +10,25 @@
   behind a write_themes exemption, so the app serves the JSON from the shop's own
   domain instead. Same-origin, so no CORS.
 
+  Both responses are cached in localStorage for the "Cache vehicle data" window,
+  24 hours by default — the data only changes when a dataset is published, and a
+  cached index makes the Make select fill without a request at all. See
+  snippets/vehicle-cache.liquid.
+
   Copy this file to your theme's sections/ directory, then add "Vehicle search"
   to any template from the theme editor.
 {%- endcomment -%}
 
 {% render 'vehicle-storage' %}
 {% render 'vehicle-json' %}
+{% render 'vehicle-cache' %}
 
 <div
   class="vehicle-search"
   id="vehicle-search-{{ section.id }}"
   data-endpoint="{{ section.settings.endpoint }}"
   data-collections-url="{{ routes.collections_url }}"
+  data-cache-hours="{{ section.settings.cache_hours | default: 24 }}"
 >
   {%- if section.settings.heading != blank -%}
     <h2 class="vehicle-search__heading">{{ section.settings.heading }}</h2>
@@ -154,6 +161,31 @@
     // routes.collections_url, so the link keeps any locale/market prefix.
     var COLLECTIONS_URL = root.dataset.collectionsUrl || '/collections';
 
+    // Survives the page, unlike `cache` below — see snippets/vehicle-cache.liquid.
+    // The setting is in hours because that is how long a merchant thinks in; 0
+    // turns it off.
+    //
+    // Stubbed rather than assumed: this section works without the cache, so a
+    // copy of it that arrives without the snippet should lose the caching and
+    // nothing else.
+    var persisted = window.YMMCache || {
+      ttl: 0,
+      read: function () {
+        return null;
+      },
+      write: function () {
+        return false;
+      },
+      prune: function () {},
+    };
+    persisted.ttl = (Number(root.dataset.cacheHours) || 0) * 3600000;
+
+    // Scopes the persisted trees. The app's own dataset version when it sends
+    // one, so publishing a new dataset orphans every cached tree at once rather
+    // than letting a fresh index pair with a stale one. Known before the first
+    // tree is asked for, because the index always resolves first.
+    var dataVersion = '';
+
     var makeEl = root.querySelector('[data-role="make"]');
     var modelEl = root.querySelector('[data-role="model"]');
     var bodyEl = root.querySelector('[data-role="body"]');
@@ -190,14 +222,24 @@
      * Called speculatively the moment a Make is selected. By the time the user
      * has picked a Model and a Body — two interactions later — this has almost
      * always landed, so the Year select fills instantly.
+     *
+     * Three layers, cheapest first: this page's memory, then localStorage from
+     * an earlier visit, then the app.
      */
     function loadTree(slug) {
       if (cache[slug]) return Promise.resolve(cache[slug]);
       if (pending[slug]) return pending[slug];
 
+      var stored = persisted.read('make:' + slug, dataVersion);
+      if (stored) {
+        cache[slug] = stored;
+        return Promise.resolve(stored);
+      }
+
       pending[slug] = getJson(ENDPOINT + '?make=' + encodeURIComponent(slug))
         .then(function (data) {
           cache[slug] = data;
+          persisted.write('make:' + slug, data, dataVersion);
           delete pending[slug];
           return data;
         })
@@ -261,37 +303,67 @@
     // snippets/vehicle-json.liquid, rendered above.
     var getJson = window.YMMJson.getJson;
 
+    /**
+     * Fills the Make select from the index and hands off to restore(). Reached
+     * from a fetch and from a cache hit alike, so a cached index is not a second
+     * code path that can drift from the first.
+     */
+    function applyIndex(index) {
+      var makes = (index && index.makes) || [];
+      if (!makes.length) {
+        status('No vehicle data has been published yet.', 'error');
+        reset(makeEl, 'No data');
+        return;
+      }
+
+      // Established before any tree is requested, so every tree this page stores
+      // is scoped to the index it belongs with. 'unversioned' rather than '' when
+      // the app sends no version, because an empty scope means "not scoped" and
+      // would make the entry outlive the dataset.
+      dataVersion = index.version ? String(index.version) : 'unversioned';
+      persisted.prune(dataVersion);
+
+      makes.forEach(function (make) {
+        skeleton[make.slug] = make;
+      });
+
+      fill(
+        makeEl,
+        makes.map(function (make) {
+          // value is the slug — that is what ?make= expects.
+          return { value: make.slug, label: make.name };
+        }),
+        'Select make'
+      );
+      status(
+        index.vehicleCount
+          ? index.vehicleCount.toLocaleString() + ' vehicles across ' + makes.length + ' makes'
+          : ''
+      );
+
+      // Only now is `skeleton` populated, so this is the first point a
+      // remembered vehicle can be validated against the real catalogue.
+      restore();
+    }
+
     function loadMakes() {
+      // The index is small but it is on the critical path — nothing can be
+      // chosen until it lands. A hit here fills the Make select in the first
+      // paint and prefills a remembered vehicle with no request at all.
+      var stored = persisted.read('index');
+      if (stored) {
+        applyIndex(stored);
+        return;
+      }
+
       status('Loading vehicles…');
       getJson(ENDPOINT)
         .then(function (index) {
-          var makes = (index && index.makes) || [];
-          if (!makes.length) {
-            status('No vehicle data has been published yet.', 'error');
-            reset(makeEl, 'No data');
-            return;
-          }
-          makes.forEach(function (make) {
-            skeleton[make.slug] = make;
-          });
-
-          fill(
-            makeEl,
-            makes.map(function (make) {
-              // value is the slug — that is what ?make= expects.
-              return { value: make.slug, label: make.name };
-            }),
-            'Select make'
-          );
-          status(
-            index.vehicleCount
-              ? index.vehicleCount.toLocaleString() + ' vehicles across ' + makes.length + ' makes'
-              : ''
-          );
-
-          // Only now is `skeleton` populated, so this is the first point a
-          // remembered vehicle can be validated against the real catalogue.
-          restore();
+          // Only a usable index is worth keeping. Caching an empty one would
+          // hold "no vehicle data has been published yet" for the whole window,
+          // outliving the publish that fixed it.
+          if (index && index.makes && index.makes.length) persisted.write('index', index);
+          applyIndex(index);
         })
         .catch(function (error) {
           status(error.message, 'error');
@@ -768,6 +840,17 @@
       "label": "Data endpoint",
       "default": "/apps/vehicle-search/vehicles.json",
       "info": "App proxy path. Only change this if you changed the app_proxy subpath in shopify.app.toml."
+    },
+    {
+      "type": "range",
+      "id": "cache_hours",
+      "label": "Cache vehicle data",
+      "min": 0,
+      "max": 72,
+      "step": 1,
+      "unit": "h",
+      "default": 24,
+      "info": "How long a shopper's browser keeps the make and model lists. Publishing a dataset clears it early only if the app sends a version. Set to 0 while testing the endpoint."
     },
     {
       "type": "range",
