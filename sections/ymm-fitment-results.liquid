@@ -20,6 +20,17 @@
   Universal accessories are merged into the same groups, trailing the exact
   matches, rather than listed apart.
 
+  A product type filter narrows the page to one category:
+
+    /collections/toyota-4runner?filter.p.product_type=Car+Mats
+
+  Shopify applies that to collection.products like any other filter, but the
+  universal side is a separate collection object that the page's params never
+  reach — so it is gated in Liquid here instead. Product type must also be
+  enabled as a filter in Search & Discovery, or the param is ignored on both
+  sides. There is no facet UI on this template; the param has to arrive on the
+  URL, so it is currently a link-level narrowing, not a shopper control.
+
   Not paginated, deliberately: merging the two sources means a paginated
   collection.products would repeat every universal product on every page.
   Liquid therefore caps collection.products at 50, which a fitment-filtered
@@ -47,8 +58,18 @@
   # records what Shopify actually filtered on rather than what the URL claimed.
   assign year_param = 'filter.p.m.custom.vehicle_year_range_simple'
   assign body_param = 'filter.p.m.custom.vehicle_body'
+  assign type_param = 'filter.p.product_type'
   assign active_year = ''
   assign active_body = ''
+
+  # Product type rides along in the same pass over collection.filters, but for a
+  # different job: it scopes the universal products merged in further down. It is
+  # deliberately kept out of the remembered vehicle — "Car Mats" describes what the
+  # shopper is browsing, not what they drive.
+  #
+  # Accumulated as a delimited string because Liquid cannot append to an array.
+  # '|~|' is a separator no product type will contain, and splitting '' gives [].
+  assign active_types_raw = ''
 
   for filter in collection.filters
     if filter.param_name == year_param
@@ -59,8 +80,14 @@
       for value in filter.active_values
         assign active_body = value.value
       endfor
+    elsif filter.param_name == type_param
+      for value in filter.active_values
+        assign active_types_raw = active_types_raw | append: value.value | append: '|~|'
+      endfor
     endif
   endfor
+
+  assign active_product_types = active_types_raw | split: '|~|'
 -%}
 
 {% render 'vehicle-storage' %}
@@ -154,23 +181,51 @@
     assign universal_types = universal_products | map: 'type'
     assign product_types = vehicle_types | concat: universal_types | uniq
 
+    # universal_collection is its own collection object, so the page's filter
+    # params never touched it — Shopify only applies those to the collection being
+    # viewed. Narrowing to ?filter.p.product_type=Car+Mats would otherwise still
+    # render a group for every other type a universal product uses.
+    #
+    # Restricting product_types is enough to gate rendering, because a universal
+    # product is only ever counted or rendered inside a matching type group.
+    # vehicle_types needs no filtering of its own: Shopify already narrowed
+    # collection.products, so every type it contributes is an active one.
+    if active_product_types.size > 0
+      assign kept_types = ''
+      for type_candidate in product_types
+        if active_product_types contains type_candidate
+          assign kept_types = kept_types | append: type_candidate | append: '|~|'
+        endif
+      endfor
+      assign product_types = kept_types | split: '|~|'
+    endif
+
     # A universal product may also sit in the vehicle collection and survive the
     # filter. Count it once, and render it once, as the vehicle-specific match.
+    # The type check mirrors the gate above — counting a product that no group
+    # will render is what made the status line overstate the total.
     assign universal_extra = 0
     for product in universal_products
       unless vehicle_ids contains product.id
-        assign universal_extra = universal_extra | plus: 1
+        if active_product_types.size == 0 or active_product_types contains product.type
+          assign universal_extra = universal_extra | plus: 1
+        endif
       endunless
     endfor
     assign total_count = collection.products.size | plus: universal_extra
 
     # The status line describes the vehicle from the filters Shopify applied.
     # Liquid cannot read arbitrary query params, but it can read active filters.
+    # Only year and body are vehicle attributes, so they are named explicitly:
+    # appending every active filter meant product type, price and availability
+    # all read as part of the vehicle's name.
     assign vehicle = ''
     for filter in collection.filters
-      for value in filter.active_values
-        assign vehicle = vehicle | append: value.label | append: ' '
-      endfor
+      if filter.param_name == year_param or filter.param_name == body_param
+        for value in filter.active_values
+          assign vehicle = vehicle | append: value.label | append: ' '
+        endfor
+      endif
     endfor
     assign vehicle = vehicle | strip
   -%}
