@@ -95,7 +95,9 @@
       "name": "Vehicle search",
       "settings": {
         "heading": "Find parts for your vehicle",
-        "endpoint": "/apps/vehicle-search/vehicles.json",
+        "button_label": "Find parts",
+        "endpoint": "/apps/vehicle-search-dev/vehicles.json",
+        "cache_hours": 24,
         "padding_block": 40
       }
     },
