@@ -16,6 +16,8 @@
   @param {string} [class] - Additional classes for the wrapper.
   @param {string} [id] - Unique suffix for element ids. Required whenever the
     page renders more than one copy.
+  @param {string} [endpoint] - Search endpoint, from the header's "Vehicle search
+    endpoint" setting. Blank falls back to the app proxy path.
 
   The old icon button also took `display_style`, to render as an icon or as the
   word "Search". An input is neither, so the header no longer passes it.
@@ -24,13 +26,16 @@
   {% render 'search', style: 'inline', id: 'header' %}
 {%- enddoc -%}
 
-{%- assign search_id = id | default: 'header' -%}
+{%- liquid
+  assign search_id = id | default: 'header'
+  assign search_endpoint = endpoint | default: '/apps/vehicle-search/search.json'
+-%}
 
 {% unless style == 'none' %}
   <div
     class="search-action search-action--vehicle{% if class != blank %} {{ class | strip }}{% endif %}"
   >
-    {% render 'vehicle-quick-search', id: search_id %}
+    {% render 'vehicle-quick-search', id: search_id, endpoint: search_endpoint %}
   </div>
 {% endunless %}
 

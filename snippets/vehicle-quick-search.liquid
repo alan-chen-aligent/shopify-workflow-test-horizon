@@ -39,7 +39,11 @@
 
   @param {string} id - Unique suffix for element ids. Required when the page has
     more than one instance.
-  @param {string} [endpoint] - App proxy path. Defaults to /apps/vehicle-search/search.json.
+  @param {string} [endpoint] - App proxy path. Defaults to
+    /apps/vehicle-search/search.json. An absolute URL works for local
+    development, but it leaves the proxy behind: the app then needs CORS headers
+    and no signature check, so it is not a value to ship. `localStorage` key
+    `ymm:endpoint:search` overrides it per browser — see the script below.
   @param {string} [label] - Field label. Visually hidden, still read out.
   @param {string} [placeholder] - Input placeholder.
   @param {string} [collections_url] - Base collections URL. Defaults to
@@ -281,6 +285,25 @@
 
     var ENDPOINT = root.dataset.endpoint || '/apps/vehicle-search/search.json';
     var COLLECTIONS_URL = root.dataset.collectionsUrl || '/collections';
+
+    /**
+     * Development override, so a local app can be pointed at without editing —
+     * and later un-editing — a theme setting that is saved per theme:
+     *
+     *   localStorage.setItem('ymm:endpoint:search', 'https://xyz.trycloudflare.com/proxy/search.json')
+     *   localStorage.removeItem('ymm:endpoint:search')
+     *
+     * localStorage rather than a query param on purpose. A param would let a
+     * crafted link aim someone else's browser at JSON we did not serve, and
+     * suggestion labels would then be attacker-supplied text in the shop's own
+     * chrome. This can only be set by whoever has the console open.
+     */
+    try {
+      var override = window.localStorage.getItem('ymm:endpoint:search');
+      if (override) ENDPOINT = override;
+    } catch (error) {
+      /* Storage blocked — the theme setting stands. */
+    }
 
     // Storefront filter params — Shopify applies these server-side, so the
     // collection page arrives already narrowed. The same two the cascade in

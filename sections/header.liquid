@@ -92,7 +92,7 @@
     endif
   endif
   capture search
-    render 'search', style: search_style, class: search_class, id: 'header'
+    render 'search', style: search_style, class: search_class, id: 'header', endpoint: section.settings.search_endpoint
   endcapture
 
   # Skip drawer search under specific conditions:
@@ -106,7 +106,7 @@
   if section.settings.search_row == 'bottom' or search_style != 'none' and skip_drawer_search == false
     # Mobile search duplicate for when search is not in the right order for mobile layout
     capture drawer_search
-      render 'search', class: 'search-action--hidden-on-menu', style: search_style, id: 'header-drawer'
+      render 'search', class: 'search-action--hidden-on-menu', style: search_style, id: 'header-drawer', endpoint: section.settings.search_endpoint
     endcapture
   endif
 
@@ -1243,6 +1243,14 @@
         }
       ],
       "default": "top",
+      "visible_if": "{{ section.settings.show_search }}"
+    },
+    {
+      "type": "text",
+      "id": "search_endpoint",
+      "label": "Vehicle search endpoint",
+      "default": "/apps/vehicle-search/search.json",
+      "info": "App proxy path. Point it at a dev server to work against a local app — an absolute URL needs CORS headers and no proxy signature check, so it is a development-only value. Prefer the https tunnel URL from shopify app dev over http://localhost, which Safari blocks from an https page.",
       "visible_if": "{{ section.settings.show_search }}"
     },
     {
