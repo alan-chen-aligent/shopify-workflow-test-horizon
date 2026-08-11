@@ -307,11 +307,23 @@
         "padding-block-start": 0,
         "padding-block-end": 32
       }
+    },
+    "vehicle_search_WA44be": {
+      "type": "vehicle-search",
+      "name": "Vehicle search",
+      "settings": {
+        "heading": "Find parts for your vehicle",
+        "button_label": "Find parts",
+        "endpoint": "/apps/vehicle-search/vehicles.json",
+        "cache_hours": 24,
+        "padding_block": 40
+      }
     }
   },
   "order": [
     "hero_qpFNPq",
     "section",
+    "vehicle_search_WA44be",
     "main"
   ]
 }
